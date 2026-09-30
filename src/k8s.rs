@@ -1,10 +1,14 @@
-use kube::Api;
-use k8s_openapi::api::core::v1::ConfigMap;
 use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::core::v1::ConfigMap;
+use kube::Api;
 use serde_json::json;
 use tracing::info;
 
-pub async fn check_agent_configmap_exists(client: &kube::Client, ns: &str, agent_name: &str) -> Result<bool, kube::Error> {
+pub async fn check_agent_configmap_exists(
+    client: &kube::Client,
+    ns: &str,
+    agent_name: &str,
+) -> Result<bool, kube::Error> {
     let cms: Api<ConfigMap> = Api::namespaced(client.clone(), ns);
     match cms.get(agent_name).await {
         Ok(_) => Ok(true),
@@ -65,7 +69,8 @@ pub async fn spawn_agent_job(
                 }
             }
         }
-    })).unwrap();
+    }))
+    .unwrap();
 
     jobs.create(&Default::default(), &job_manifest).await?;
     info!("Job K8s créé par Aramaki : {}", job_id);
