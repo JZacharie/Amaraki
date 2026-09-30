@@ -1,0 +1,12 @@
+/home/joseph/git/Amaraki/target/debug/deps/tinystr-1bef09d99289efd9.d: /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/lib.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/macros.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/ascii.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/asciibyte.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/error.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/int_ops.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/unvalidated.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/ule.rs
+
+/home/joseph/git/Amaraki/target/debug/deps/libtinystr-1bef09d99289efd9.rmeta: /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/lib.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/macros.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/ascii.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/asciibyte.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/error.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/int_ops.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/unvalidated.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/ule.rs
+
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/lib.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/macros.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/ascii.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/asciibyte.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/error.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/int_ops.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/unvalidated.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.4/src/ule.rs:

@@ -1,0 +1,12 @@
+/home/joseph/git/Amaraki/target/debug/deps/async_trait-aae61ade1b607afe.d: /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/lib.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/args.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/bound.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/expand.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/lifetime.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/parse.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/receiver.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/verbatim.rs
+
+/home/joseph/git/Amaraki/target/debug/deps/libasync_trait-aae61ade1b607afe.so: /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/lib.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/args.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/bound.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/expand.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/lifetime.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/parse.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/receiver.rs /home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/verbatim.rs
+
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/lib.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/args.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/bound.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/expand.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/lifetime.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/parse.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/receiver.rs:
+/home/joseph/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.92/src/verbatim.rs:
