@@ -1,8 +1,12 @@
-use axum::{routing::{get, post}, Router, Json, extract::State};
-use serde::{Deserialize, Serialize};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 mod k8s;
 
@@ -41,7 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent_runner_image = std::env::var("AGENT_RUNNER_IMAGE")
         .unwrap_or_else(|_| "ghcr.io/jzacharie/opencode-agent:latest".to_string());
 
-    info!("Initialisation d'Aramaki (Chief Section 9) dans le namespace '{}'", namespace);
+    info!(
+        "Initialisation d'Aramaki (Chief Section 9) dans le namespace '{}'",
+        namespace
+    );
 
     let state = Arc::new(AppState {
         k8s_client,
@@ -88,16 +95,24 @@ async fn handle_slack_event(
     Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
-async fn process_agent_request(state: Arc<AppState>, event: SlackEventDetail) -> Result<(), Box<dyn std::error::Error>> {
+async fn process_agent_request(
+    state: Arc<AppState>,
+    event: SlackEventDetail,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parts: Vec<&str> = event.text.split_whitespace().collect();
-    let agent_name = parts.iter()
+    let agent_name = parts
+        .iter()
         .find(|p| p.starts_with("agent-"))
-        .map(|s| *s)
+        .copied()
         .unwrap_or("agent-code-reviewer");
 
-    info!("Reçu demande pour l'agent '{}' sur le canal {}", agent_name, event.channel);
+    info!(
+        "Reçu demande pour l'agent '{}' sur le canal {}",
+        agent_name, event.channel
+    );
 
-    let exists = k8s::check_agent_configmap_exists(&state.k8s_client, &state.namespace, agent_name).await?;
+    let exists =
+        k8s::check_agent_configmap_exists(&state.k8s_client, &state.namespace, agent_name).await?;
     if !exists {
         warn!("ConfigMap introuvable pour l'agent {}", agent_name);
         return Ok(());
@@ -111,7 +126,8 @@ async fn process_agent_request(state: Arc<AppState>, event: SlackEventDetail) ->
         &event.text,
         &event.channel,
         &event.ts,
-    ).await?;
+    )
+    .await?;
 
     Ok(())
 }
