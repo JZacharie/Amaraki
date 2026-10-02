@@ -267,6 +267,8 @@ pub async fn spawn_agent_job(
                     "containers": [{
                         "name": "opencode-agent",
                         "image": agent_runner_image,
+                        "command": ["/bin/sh", "-c"],
+                        "args": ["opencode run \"$USER_PROMPT\""],
                         "securityContext": {
                             "runAsNonRoot": true,
                             "runAsUser": 1000,
