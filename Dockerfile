@@ -5,8 +5,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --bin aramaki
 
-# Stage 2: Runtime image
-FROM debian:bookworm-slim AS runner
+# Stage 2: Runtime image (aligned on Debian 13 / Trixie glibc with rust:latest)
+FROM debian:trixie-slim AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/aramaki /usr/local/bin/aramaki
 
