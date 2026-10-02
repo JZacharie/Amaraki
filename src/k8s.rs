@@ -300,7 +300,7 @@ pub async fn spawn_agent_job(
                         "image": agent_runner_image,
                         "command": ["/bin/sh", "-c"],
                         "args": [
-                            "mkdir -p ~/.config/opencode && if [ -n \"$OPENCODE_CONFIG_CONTENT\" ]; then echo \"$OPENCODE_CONFIG_CONTENT\" > ~/.config/opencode/opencode.jsonc; fi && opencode run \"$USER_PROMPT\""
+                            "mkdir -p ~/.config/opencode && if [ -n \"$OPENCODE_CONFIG_CONTENT\" ]; then printf \"%s\" \"$OPENCODE_CONFIG_CONTENT\" > ~/.config/opencode/opencode.jsonc; fi && opencode run \"$USER_PROMPT\""
                         ],
                         "securityContext": {
                             "runAsNonRoot": true,
