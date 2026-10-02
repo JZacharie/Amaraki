@@ -184,6 +184,8 @@ pub async fn spawn_agent_job(
         .min(3);
 
     let mut env_list = vec![
+        json!({ "name": "AGENT_NAME", "value": agent_name }),
+        json!({ "name": "AGENT_MODEL", "value": &model }),
         json!({ "name": "USER_PROMPT", "value": bounded_prompt }),
         json!({ "name": "SLACK_CHANNEL", "value": channel }),
         json!({ "name": "SLACK_THREAD_TS", "value": thread_ts }),
@@ -300,7 +302,53 @@ pub async fn spawn_agent_job(
                         "image": agent_runner_image,
                         "command": ["/bin/sh", "-c"],
                         "args": [
-                            "mkdir -p ~/.config/opencode && if [ -n \"$OPENCODE_CONFIG_CONTENT\" ]; then printf \"%s\" \"$OPENCODE_CONFIG_CONTENT\" > ~/.config/opencode/opencode.jsonc; fi && opencode run \"$USER_PROMPT\""
+                            r#"
+TS_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+SEC_START=$(date +%s)
+echo "================================================================================"
+echo "[$TS_START] [AGENT_INIT] 🚀 Démarrage de l'agent Section 9"
+echo "[$TS_START] [AGENT_META] name=\"${AGENT_NAME:-unknown}\" | model=\"${AGENT_MODEL:-unknown}\" | job_id=\"${ARAMAKI_JOB_ID:-unknown}\""
+echo "[$TS_START] [INPUT_PROMPT] \"${USER_PROMPT}\""
+echo "[$TS_START] [SLACK_CONTEXT] channel=\"${SLACK_CHANNEL:-none}\" | thread_ts=\"${SLACK_THREAD_TS:-none}\""
+echo "[$TS_START] [ENV_AUDIT] Variables d'environnement déclarées (secrets masqués) :"
+env | cut -d= -f1 | sort | while read -r var_name; do
+  case "$var_name" in
+    *PASSWORD*|*TOKEN*|*SECRET*|*KEY*|*AUTH*|*COOKIE*)
+      echo "  - $var_name=[REDACTED/MASKED]"
+      ;;
+    *)
+      eval "val=\$$var_name"
+      if [ ${#val} -gt 120 ]; then
+        val="$(echo "$val" | head -c 117)..."
+      fi
+      echo "  - $var_name=\"$val\""
+      ;;
+  esac
+done
+echo "================================================================================"
+
+mkdir -p ~/.config/opencode
+if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then
+  printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.jsonc
+fi
+
+TS_RUN=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+echo "[$TS_RUN] [AGENT_EXEC] ⚡ Exécution d'OpenCode en cours..."
+
+# Exécution de l'agent et capture du code retour
+opencode run "$USER_PROMPT"
+EXIT_CODE=$?
+
+SEC_END=$(date +%s)
+TS_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+DURATION=$((SEC_END - SEC_START))
+
+echo "================================================================================"
+echo "[$TS_END] [AGENT_COMPLETED] 🏁 Fin d'exécution de l'agent"
+echo "[$TS_END] [PERF] Durée totale : ${DURATION}s | Code de sortie : ${EXIT_CODE}"
+echo "================================================================================"
+exit $EXIT_CODE
+"#.trim()
                         ],
                         "securityContext": {
                             "runAsNonRoot": true,
