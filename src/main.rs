@@ -320,6 +320,21 @@ async fn handle_slack_event(
     Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
+fn strip_slack_mentions(text: &str) -> String {
+    let mut result = String::new();
+    let mut in_mention = false;
+    for c in text.chars() {
+        if c == '<' {
+            in_mention = true;
+        } else if in_mention && c == '>' {
+            in_mention = false;
+        } else if !in_mention {
+            result.push(c);
+        }
+    }
+    result.trim().to_string()
+}
+
 async fn process_agent_request(
     state: Arc<AppState>,
     event: SlackEventDetail,
@@ -330,6 +345,7 @@ async fn process_agent_request(
     let mut instruction_text = event.text.clone().unwrap_or_default();
 
     // 1. Traitement des médias (fichiers audio ou vidéo)
+    let mut has_audio = false;
     for file in &event.files {
         let mime = file.mimetype.as_deref().unwrap_or("");
         let name = file.name.as_deref().unwrap_or("media.mp3");
@@ -339,6 +355,7 @@ async fn process_agent_request(
             || name.ends_with(".wav")
             || name.ends_with(".m4a")
         {
+            has_audio = true;
             if let Some(download_url) = file
                 .url_private_download
                 .as_ref()
@@ -369,13 +386,43 @@ async fn process_agent_request(
                             .await;
                     }
                     Err(e) => {
-                        error!("[GATEKEEPER] Erreur transcription: {:?}", e);
+                        error!("[GATEKEEPER] ❌ Erreur transcription audio: {:?}", e);
+                        let fail_msg = "⚠️ *Chef Amaraki* : L'analyse audio a échoué (impossible de transcrire l'enregistrement). Aucune action n'est entreprise ni interprétée.";
+                        state
+                            .slack_notifier
+                            .post_message(&event.channel, fail_msg, Some(&thread_id))
+                            .await;
+                        // On interrompt immédiatement sans chercher à interpréter
+                        return Ok(());
                     }
                 }
                 break;
+            } else {
+                let fail_msg = "⚠️ *Chef Amaraki* : Impossible d'accéder au fichier audio joint (URL de téléchargement manquant).";
+                state
+                    .slack_notifier
+                    .post_message(&event.channel, fail_msg, Some(&thread_id))
+                    .await;
+                return Ok(());
             }
         }
     }
+
+    // Nettoyage de l'instruction (suppression des mentions Slack <@...>)
+    let cleaned = strip_slack_mentions(&instruction_text);
+    if cleaned.is_empty() {
+        if has_audio {
+            let fail_msg = "⚠️ *Chef Amaraki* : Aucun contenu vocal n'a pu être extrait du fichier audio. Aucune action n'est entreprise.";
+            state
+                .slack_notifier
+                .post_message(&event.channel, fail_msg, Some(&thread_id))
+                .await;
+        } else {
+            info!("[ACTION] Aucun texte ni instruction exploitable dans l'événement");
+        }
+        return Ok(());
+    }
+    instruction_text = cleaned;
 
     // 2. Étape Gatekeeper : Vérification si une validation est en attente
     if let Some(pending) = state.gatekeeper.get_pending(&session_key).await {

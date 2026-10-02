@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PendingValidation {
@@ -22,6 +22,8 @@ pub struct GatekeeperStore {
     pending: Arc<RwLock<HashMap<String, PendingValidation>>>,
     http_client: reqwest::Client,
     whisper_url: String,
+    whisper_api_key: Option<String>,
+    whisper_model: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,13 +36,45 @@ pub enum UserValidationIntent {
 
 impl GatekeeperStore {
     pub fn new() -> Self {
+        let whisper_api_key = std::env::var("WHISPER_API_KEY")
+            .or_else(|_| std::env::var("GROQ_API_KEY"))
+            .ok()
+            .filter(|k| !k.trim().is_empty());
+
         let whisper_url = std::env::var("WHISPER_URL").unwrap_or_else(|_| {
-            "http://whisperx-http.whisperx.svc.cluster.local:8080/asr".to_string()
+            if whisper_api_key.is_some() {
+                "https://api.groq.com/openai/v1/audio/transcriptions".to_string()
+            } else {
+                "http://whisperx-http.whisperx.svc.cluster.local:8080/asr".to_string()
+            }
         });
+
+        let whisper_model = std::env::var("WHISPER_MODEL").unwrap_or_else(|_| {
+            if whisper_api_key.is_some() || whisper_url.contains("groq.com") {
+                "whisper-large-v3-turbo".to_string()
+            } else {
+                "whisper-1".to_string()
+            }
+        });
+
+        if whisper_api_key.is_some() {
+            info!(
+                "[GATEKEEPER] 🎙️ Service STT configuré avec API externe ({}) | Modèle: {}",
+                whisper_url, whisper_model
+            );
+        } else {
+            info!(
+                "[GATEKEEPER] 🎙️ Service STT configuré sur endpoint local ({}) | Modèle: {}",
+                whisper_url, whisper_model
+            );
+        }
+
         Self {
             pending: Arc::new(RwLock::new(HashMap::new())),
             http_client: reqwest::Client::new(),
             whisper_url,
+            whisper_api_key,
+            whisper_model,
         }
     }
 
@@ -225,26 +259,41 @@ impl GatekeeperStore {
             self.whisper_url
         );
 
+        let mime = if filename.ends_with(".m4a") {
+            "audio/m4a"
+        } else if filename.ends_with(".wav") {
+            "audio/wav"
+        } else if filename.ends_with(".ogg") {
+            "audio/ogg"
+        } else if filename.ends_with(".mp4") {
+            "video/mp4"
+        } else {
+            "audio/mpeg"
+        };
+
         // Build multipart request compatible with both OpenAI Whisper and WhisperX ASR
         let part1 = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
             .file_name(filename.to_string())
-            .mime_str("audio/mpeg")?;
-        let part2 = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
-            .file_name(filename.to_string())
-            .mime_str("audio/mpeg")?;
+            .mime_str(mime)?;
 
-        let form = reqwest::multipart::Form::new()
-            .part("audio_file", part1)
-            .part("file", part2)
-            .text("model", "whisper-1")
+        let mut form = reqwest::multipart::Form::new()
+            .part("file", part1)
+            .text("model", self.whisper_model.clone())
             .text("language", "fr");
 
-        let resp = self
-            .http_client
-            .post(&self.whisper_url)
-            .multipart(form)
-            .send()
-            .await?;
+        if self.whisper_api_key.is_none() {
+            let part2 = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
+                .file_name(filename.to_string())
+                .mime_str(mime)?;
+            form = form.part("audio_file", part2);
+        }
+
+        let mut req_builder = self.http_client.post(&self.whisper_url).multipart(form);
+        if let Some(ref key) = self.whisper_api_key {
+            req_builder = req_builder.bearer_auth(key);
+        }
+
+        let resp = req_builder.send().await?;
 
         let status = resp.status();
         if status.is_success() {
@@ -269,15 +318,15 @@ impl GatekeeperStore {
                     return Ok(joined.trim().to_string());
                 }
             }
+            warn!("[GATEKEEPER] ⚠️ Transcription vide retournée par le service STT");
+            Err(anyhow::anyhow!("Transcription vide retournée par le service STT").into())
+        } else {
+            let err_body = resp.text().await.unwrap_or_default();
+            error!(
+                "[GATEKEEPER] ❌ Échec de transcription HTTP ({}) : {}",
+                status, err_body
+            );
+            Err(anyhow::anyhow!("Échec HTTP {} du service STT : {}", status, err_body).into())
         }
-
-        warn!(
-            "[GATEKEEPER] ⚠️ Échec de transcription HTTP ({}), fallback sur nom de fichier",
-            status
-        );
-        Ok(format!(
-            "Instruction vocale reçue depuis le fichier audio {}",
-            filename
-        ))
     }
 }
