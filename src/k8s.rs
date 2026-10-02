@@ -84,6 +84,38 @@ pub async fn get_agent_config(
                         agent_name, e
                     ),
                 }
+            } else if let Some(opencode_raw) = data.get("opencode.json") {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(opencode_raw) {
+                    let model = val.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+                    let mut mcp_servers = Vec::new();
+                    if let Some(mcp_obj) = val.get("mcp").and_then(|m| m.as_object()) {
+                        for (s_name, s_val) in mcp_obj {
+                            let s_type = s_val.get("type").and_then(|t| t.as_str()).map(|s| s.to_string());
+                            let url = s_val.get("url").and_then(|u| u.as_str()).map(|s| s.to_string());
+                            let command = s_val.get("command").and_then(|c| c.as_str()).map(|s| s.to_string());
+                            let args = s_val.get("args").and_then(|a| a.as_array()).map(|arr| {
+                                arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+                            }).unwrap_or_default();
+                            mcp_servers.push(McpServerConfig {
+                                name: s_name.clone(),
+                                server_type: s_type,
+                                url,
+                                command,
+                                args,
+                            });
+                        }
+                    }
+                    let prompt_txt = data.get("prompt.txt").cloned();
+                    return Ok(Some(AgentConfigMapData {
+                        name: agent_name.to_string(),
+                        description: Some("Agent OpenCode Section 9".to_string()),
+                        model,
+                        system_prompt: prompt_txt,
+                        mcp_servers: if mcp_servers.is_empty() { None } else { Some(mcp_servers) },
+                        max_iterations: Some(5),
+                        env: std::collections::HashMap::new(),
+                    }));
+                }
             }
         }
     }
@@ -102,41 +134,37 @@ pub async fn discover_all_agents(
 
     for cm in list.items {
         let name = cm.metadata.name.unwrap_or_default();
-        if let Some(data) = cm.data {
-            if let Some(raw_json) = data.get("agent.json") {
-                if let Ok(config) = serde_json::from_str::<AgentConfigMapData>(raw_json) {
-                    let agent_name = if !config.name.is_empty() {
-                        config.name
-                    } else {
-                        name.clone()
-                    };
-                    let model = config
-                        .model
-                        .unwrap_or_else(|| "opencode/free-default-model".to_string());
-                    let desc = config
-                        .description
-                        .unwrap_or_else(|| "Section 9 Specialist Agent".to_string());
-                    let tools: Vec<String> = config
-                        .mcp_servers
-                        .as_ref()
-                        .map(|servers| servers.iter().map(|s| s.name.clone()).collect())
-                        .unwrap_or_default();
+        if let Ok(Some(config)) = get_agent_config(client, ns, &name).await {
+            let agent_name = if !config.name.is_empty() {
+                config.name
+            } else {
+                name.clone()
+            };
+            let model = config
+                .model
+                .unwrap_or_else(|| "opencode/free-default-model".to_string());
+            let desc = config
+                .description
+                .unwrap_or_else(|| "Section 9 Specialist Agent".to_string());
+            let tools: Vec<String> = config
+                .mcp_servers
+                .as_ref()
+                .map(|servers| servers.iter().map(|s| s.name.clone()).collect())
+                .unwrap_or_default();
 
-                    metrics
-                        .register_agent_full(
-                            &agent_name,
-                            &model,
-                            &desc,
-                            tools,
-                            config.system_prompt,
-                            config.mcp_servers,
-                            config.max_iterations,
-                            config.env,
-                        )
-                        .await;
-                    count += 1;
-                }
-            }
+            metrics
+                .register_agent_full(
+                    &agent_name,
+                    &model,
+                    &desc,
+                    tools,
+                    config.system_prompt,
+                    config.mcp_servers,
+                    config.max_iterations,
+                    config.env,
+                )
+                .await;
+            count += 1;
         }
     }
 
@@ -483,12 +511,26 @@ pub async fn check_agent_mcp_readiness(
                             let svcs: Api<k8s_openapi::api::core::v1::Service> =
                                 Api::namespaced(client.clone(), svc_ns);
                             if svcs.get(svc_name).await.is_err() {
-                                warnings.push(format!("Serveur MCP `{}` configuré sur `{}` mais le Service K8s `{}/{}` est introuvable !", s.name, url, svc_ns, svc_name));
+                                warnings.push(format!("Serveur MCP `{}` (`{}`) : Service K8s `{}/{}` introuvable !", s.name, url, svc_ns, svc_name));
+                            } else {
+                                // Vérifier la présence d'endpoints prêts (pod sous-jacent actif)
+                                let eps: Api<k8s_openapi::api::core::v1::Endpoints> =
+                                    Api::namespaced(client.clone(), svc_ns);
+                                if let Ok(ep) = eps.get(svc_name).await {
+                                    let has_ready_subsets = ep.subsets.as_ref().map(|subsets| {
+                                        subsets.iter().any(|sub| {
+                                            sub.addresses.as_ref().map(|addrs| !addrs.is_empty()).unwrap_or(false)
+                                        })
+                                    }).unwrap_or(false);
+                                    if !has_ready_subsets {
+                                        warnings.push(format!("Serveur MCP `{}` (`{}`) : Aucun Pod actif/prêt derrière le Service `{}/{}` !", s.name, url, svc_ns, svc_name));
+                                    }
+                                }
                             }
                         }
                     }
                 } else if s.command.as_deref() == Some("npx") {
-                    warnings.push(format!("MCP `{}` configuré avec `npx` (exécution locale), mais l'environnement conteneur ne dispose pas de node/npx. Une URL MCP distante K8s est requise.", s.name));
+                    warnings.push(format!("MCP `{}` configuré avec `npx` (exécution locale), mais l'environnement conteneur ne dispose pas de node/npx. Une URL distante K8s est requise.", s.name));
                 }
             }
         }

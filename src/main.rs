@@ -457,19 +457,19 @@ async fn process_agent_request(
             k8s::check_agent_mcp_readiness(client, &state.namespace, &agent_name).await;
         if !mcp_warnings.is_empty() {
             let mut warn_text = format!(
-                "⚠️ *Chef Aramaki (Alerte Intégration MCP)* : Des dépendances d'outils sont incomplètes pour *{}* :\n",
+                "🛑 *Chef Aramaki (Lancement Refusé - Prérequis MCP Indisponibles)* :\nL'agent *{}* est temporairement *désactivé* car ses serveurs d'outils (MCP) ne sont pas opérationnels dans le cluster :\n",
                 agent_name
             );
             for w in &mcp_warnings {
                 warn_text.push_str(&format!("• {}\n", w));
             }
-            warn_text.push_str(
-                "_Information remontée au Chef : une intégration de cluster est requise._",
-            );
+            warn_text.push_str("\n_Rapport Chef Aramaki : La mission ne peut pas être exécutée sans ces outils. Veuillez vérifier le déploiement ou l'intégration des services MCP requis._");
             state
                 .slack_notifier
                 .post_message(&event.channel, &warn_text, Some(&thread_id))
                 .await;
+            state.metrics.record_request(false);
+            return Ok(());
         }
 
         match k8s::spawn_agent_job(
