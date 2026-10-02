@@ -35,7 +35,7 @@ pub enum UserValidationIntent {
 impl GatekeeperStore {
     pub fn new() -> Self {
         let whisper_url = std::env::var("WHISPER_URL").unwrap_or_else(|_| {
-            "http://speaches.speaches.svc.cluster.local:8000/v1/audio/transcriptions".to_string()
+            "http://whisperx-http.whisperx.svc.cluster.local:8080/asr".to_string()
         });
         Self {
             pending: Arc::new(RwLock::new(HashMap::new())),
@@ -225,13 +225,17 @@ impl GatekeeperStore {
             self.whisper_url
         );
 
-        // Build multipart request for OpenAI-compatible Whisper ASR
-        let part = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
+        // Build multipart request compatible with both OpenAI Whisper and WhisperX ASR
+        let part1 = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str("audio/mpeg")?;
+        let part2 = reqwest::multipart::Part::bytes(audio_bytes.to_vec())
             .file_name(filename.to_string())
             .mime_str("audio/mpeg")?;
 
         let form = reqwest::multipart::Form::new()
-            .part("file", part)
+            .part("audio_file", part1)
+            .part("file", part2)
             .text("model", "whisper-1")
             .text("language", "fr");
 
@@ -246,8 +250,24 @@ impl GatekeeperStore {
         if status.is_success() {
             let val: serde_json::Value = resp.json().await?;
             if let Some(text) = val.get("text").and_then(|t| t.as_str()) {
-                info!("[GATEKEEPER] ✅ Transcription réussie : \"{}\"", text);
-                return Ok(text.trim().to_string());
+                if !text.trim().is_empty() {
+                    info!("[GATEKEEPER] ✅ Transcription réussie : \"{}\"", text);
+                    return Ok(text.trim().to_string());
+                }
+            }
+            if let Some(segments) = val.get("segments").and_then(|s| s.as_array()) {
+                let joined: String = segments
+                    .iter()
+                    .filter_map(|s| s.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !joined.trim().is_empty() {
+                    info!(
+                        "[GATEKEEPER] ✅ Transcription segments réussie : \"{}\"",
+                        joined
+                    );
+                    return Ok(joined.trim().to_string());
+                }
             }
         }
 

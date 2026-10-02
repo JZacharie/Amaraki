@@ -74,10 +74,38 @@ impl SlackNotifier {
                         info!("[SLACK] 💬 Message envoyé avec succès dans '{}'", channel);
                         return true;
                     } else {
+                        let err_str = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
                         error!(
                             "[SLACK] ❌ Échec API Slack (chat.postMessage): {:?}",
                             v.get("error")
                         );
+                        if thread_ts.is_some()
+                            && (err_str == "channel_not_found" || err_str == "thread_not_found")
+                        {
+                            warn!("[SLACK] ⚠️ Échec avec thread_ts, tentative de repli direct sans thread...");
+                            let fallback_payload = PostMessagePayload {
+                                channel,
+                                text,
+                                thread_ts: None,
+                                username: "Chef Aramaki",
+                                icon_url: "https://aramaki.p.zacharie.org/logo.png",
+                            };
+                            if let Ok(retry_resp) = self
+                                .client
+                                .post("https://slack.com/api/chat.postMessage")
+                                .bearer_auth(token)
+                                .json(&fallback_payload)
+                                .send()
+                                .await
+                            {
+                                let rv: serde_json::Value =
+                                    retry_resp.json().await.unwrap_or_default();
+                                if rv.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
+                                    info!("[SLACK] 💬 Message envoyé avec succès (repli hors-thread) dans '{}'", channel);
+                                    return true;
+                                }
+                            }
+                        }
                     }
                 } else {
                     error!("[SLACK] ❌ Échec HTTP Slack: {}", resp.status());
