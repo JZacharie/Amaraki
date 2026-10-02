@@ -2,6 +2,7 @@
 FROM rust:latest AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY assets ./assets
 COPY src ./src
 RUN cargo build --release --bin aramaki
 

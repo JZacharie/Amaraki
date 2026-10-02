@@ -1,13 +1,16 @@
 use crate::auth::{AuthConfig, LoginPayload, LoginResponse};
 use crate::metrics::MetricsStore;
+use crate::slack::SlackNotifier;
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
 use std::sync::Arc;
+
+const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
 
 #[derive(Clone)]
 pub struct WebState {
@@ -16,6 +19,7 @@ pub struct WebState {
     pub namespace: String,
     pub k8s_client: Option<kube::Client>,
     pub agent_runner_image: String,
+    pub slack_notifier: Arc<SlackNotifier>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +37,24 @@ pub struct TestTriggerPayload {
     pub channel: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct SendSlackMessagePayload {
+    pub channel: Option<String>,
+    pub text: String,
+}
+
+// Handler for the logo PNG
+pub async fn logo_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        LOGO_PNG,
+    )
+}
+
 // Handler for the main Dashboard HTML page
 pub async fn dashboard_html_handler() -> Html<&'static str> {
     Html(DASHBOARD_HTML)
@@ -47,6 +69,43 @@ pub async fn login_html_handler() -> Html<&'static str> {
 pub async fn dashboard_stats_handler(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     let summary = state.metrics.get_dashboard_summary(&state.namespace).await;
     Json(summary)
+}
+
+// Agent configuration JSON export API
+pub async fn agent_config_handler(
+    State(state): State<Arc<WebState>>,
+    Path(agent_name): Path<String>,
+) -> impl IntoResponse {
+    if let Some(agent) = state.metrics.get_agent(&agent_name).await {
+        let config = serde_json::json!({
+            "name": agent.name,
+            "description": agent.description,
+            "model": agent.model,
+            "system_prompt": agent.system_prompt,
+            "mcp_servers": agent.mcp_servers,
+            "max_iterations": agent.max_iterations.unwrap_or(10),
+            "env": agent.env,
+            "tools_exposed": agent.tools_exposed,
+            "stats": {
+                "total_runs": agent.total_runs,
+                "success_count": agent.success_count,
+                "failure_count": agent.failure_count,
+                "running_count": agent.running_count,
+                "total_duration_secs": agent.total_duration_secs,
+                "last_run": agent.last_run
+            }
+        });
+        (StatusCode::OK, Json(config)).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "Agent non trouvé",
+                "agent": agent_name
+            })),
+        )
+            .into_response()
+    }
 }
 
 // Prometheus metrics endpoint
@@ -258,6 +317,22 @@ pub async fn agent_callback_handler(
         }
     }
 
+    // Notification Slack du rapport de mission
+    let emoji = if payload.success { "✅" } else { "❌" };
+    let status_str = if payload.success { "SUCCÈS" } else { "ÉCHEC" };
+    let duration_str = payload
+        .duration_secs
+        .map(|d| format!("{:.1}s", d))
+        .unwrap_or_else(|| "N/A".to_string());
+    let slack_msg = format!(
+        "{} *Chef Aramaki (Section 9)* : Rapport d'intervention pour `{}`\n• *Statut* : {}\n• *Durée* : {}",
+        emoji, payload.job_id, status_str, duration_str
+    );
+    state
+        .slack_notifier
+        .post_message("#ai", &slack_msg, None)
+        .await;
+
     Json(serde_json::json!({ "status": "recorded" }))
 }
 
@@ -270,9 +345,7 @@ pub async fn test_trigger_handler(
     let client_ip = crate::auth::extract_client_ip(&headers);
     state.metrics.record_request(true);
 
-    let channel = payload
-        .channel
-        .unwrap_or_else(|| "#section-9-command".to_string());
+    let channel = payload.channel.unwrap_or_else(|| "#ai".to_string());
     let prompt = payload.prompt;
     let agent_name = payload.agent_name;
 
@@ -297,14 +370,25 @@ pub async fn test_trigger_handler(
         )
         .await
         {
-            Ok(job_id) => (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "spawned",
-                    "job_id": job_id,
-                    "agent": agent_name
-                })),
-            ),
+            Ok(job_id) => {
+                let slack_msg = format!(
+                    "🫡 *Chef Aramaki (Section 9)* : Lancement de l'agent *{}* sur `{}`.\n• *Job K8s* : `{}`\n• *Mission* : \"{}\"",
+                    agent_name, channel, job_id, prompt
+                );
+                state
+                    .slack_notifier
+                    .post_message(&channel, &slack_msg, None)
+                    .await;
+
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": "spawned",
+                        "job_id": job_id,
+                        "agent": agent_name
+                    })),
+                )
+            }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -320,6 +404,14 @@ pub async fn test_trigger_handler(
             agent_name,
             &uuid::Uuid::new_v4().to_string()[..8]
         );
+        let slack_msg = format!(
+            "🫡 *Chef Aramaki (Section 9)* : [Simulation] Agent *{}* prêt sur `{}`\n• *Mission* : \"{}\"",
+            agent_name, channel, prompt
+        );
+        state
+            .slack_notifier
+            .post_message(&channel, &slack_msg, None)
+            .await;
         state
             .metrics
             .record_agent_spawn(
@@ -353,6 +445,24 @@ pub async fn test_trigger_handler(
     }
 }
 
+// Endpoint to post a custom message directly to Slack channel as Chef Aramaki
+pub async fn slack_send_handler(
+    State(state): State<Arc<WebState>>,
+    Json(payload): Json<SendSlackMessagePayload>,
+) -> impl IntoResponse {
+    let channel = payload.channel.unwrap_or_else(|| "#ai".to_string());
+    let sent = state
+        .slack_notifier
+        .post_message(&channel, &payload.text, None)
+        .await;
+
+    Json(serde_json::json!({
+        "status": if sent { "sent" } else { "failed" },
+        "channel": channel,
+        "configured": state.slack_notifier.is_configured()
+    }))
+}
+
 // Embedded Login HTML
 const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <html lang="fr">
@@ -360,6 +470,7 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Aramaki // Section 9 - Authentification</title>
+  <link rel="icon" type="image/png" href="/logo.png">
   <style>
     :root {
       --bg: #090d16;
@@ -489,6 +600,9 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
   <div class="login-card">
+    <div style="display:flex; justify-content:center; margin-bottom:1.5rem;">
+      <img src="/logo.png" alt="Chef Aramaki" style="width:105px; height:105px; border-radius:50%; border:2px solid var(--accent-cyan); box-shadow:0 0 25px rgba(0,242,254,0.4); object-fit:cover;">
+    </div>
     <span class="badge">Section 9 // Security Gateway</span>
     <h1>Aramaki Orchestrator</h1>
     <p class="subtitle">Connexion au centre de contrôle des agents</p>
@@ -558,6 +672,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Aramaki // Section 9 Agent Orchestrator & Observability</title>
+  <link rel="icon" type="image/png" href="/logo.png">
   <style>
     :root {
       --bg: #070a11;
@@ -914,12 +1029,240 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
       font-size: 0.75rem;
       color: var(--text-muted);
     }
+
+    /* Agent Row Interactivity */
+    .agent-row {
+      cursor: pointer;
+      transition: background-color 0.15s ease, transform 0.1s ease;
+    }
+    .agent-row:hover td {
+      background: rgba(0, 242, 254, 0.07) !important;
+    }
+
+    /* Modal Agent Details & Export JSON */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(3, 7, 18, 0.85);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal-overlay.active {
+      display: flex;
+    }
+    .modal-content {
+      background: #0f172a;
+      border: 1px solid rgba(0, 242, 254, 0.3);
+      border-radius: 14px;
+      width: 100%;
+      max-width: 860px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 35px rgba(0, 242, 254, 0.15);
+      overflow: hidden;
+      animation: modalFadeIn 0.2s ease-out;
+    }
+    @keyframes modalFadeIn {
+      from { opacity: 0; transform: scale(0.97); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .modal-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(15, 23, 42, 0.95);
+    }
+    .modal-title-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .modal-title {
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .modal-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.4rem;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      line-height: 1;
+      transition: color 0.15s, background 0.15s;
+    }
+    .modal-close:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .modal-tabs {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem 0 1.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(10, 15, 26, 0.6);
+    }
+    .modal-tab {
+      padding: 0.5rem 1rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .modal-tab:hover {
+      color: #fff;
+    }
+    .modal-tab.active {
+      color: var(--accent-cyan);
+      border-bottom: 2px solid var(--accent-cyan);
+    }
+    .modal-body {
+      padding: 1.5rem;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .modal-section {
+      display: none;
+    }
+    .modal-section.active {
+      display: block;
+    }
+    .prompt-box {
+      background: #030712;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: #e2e8f0;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 420px;
+      overflow-y: auto;
+    }
+    .json-code-box {
+      background: #030712;
+      border: 1px solid rgba(0, 242, 254, 0.2);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: #38bdf8;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 420px;
+      overflow-y: auto;
+    }
+    .modal-footer {
+      padding: 1rem 1.5rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(15, 23, 42, 0.95);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    .modal-actions-left {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .btn-copy {
+      background: rgba(0, 242, 254, 0.1);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(0, 242, 254, 0.3);
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.15s;
+    }
+    .btn-copy:hover {
+      background: rgba(0, 242, 254, 0.25);
+      box-shadow: 0 0 10px rgba(0, 242, 254, 0.3);
+    }
+    .btn-export {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      color: #090d16;
+      border: none;
+      padding: 0.45rem 0.95rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.15s;
+    }
+    .btn-export:hover {
+      box-shadow: 0 0 15px rgba(0, 242, 254, 0.5);
+      transform: translateY(-1px);
+    }
+    .btn-close-modal {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .btn-close-modal:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.12);
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+    .meta-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 6px;
+      padding: 0.75rem;
+    }
+    .meta-card .label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+    .meta-card .value {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
   <header>
     <div class="brand">
-      <div class="logo-badge">A9</div>
+      <img src="/logo.png" alt="Chef Aramaki" style="width:48px; height:48px; border-radius:50%; border:2px solid var(--accent-cyan); box-shadow:0 0 16px rgba(0,242,254,0.35); object-fit:cover; margin-right:0.85rem; flex-shrink:0;">
       <div>
         <span class="sub">Chief Section 9 // K8s AI Orchestrator</span>
         <h1>Aramaki Monitor & Metrics</h1>
@@ -1013,7 +1356,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             <table>
               <thead>
                 <tr>
-                  <th>Agent</th>
+                  <th>Agent <span style="font-weight:normal; font-size:0.68rem; color:var(--accent-cyan); text-transform:none;">(cliquer pour inspecter & exporter)</span></th>
                   <th>Modèle Configuré</th>
                   <th>Outils Exposés (MCP)</th>
                   <th>Runs</th>
@@ -1113,6 +1456,93 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   <footer>
     Aramaki v0.1.0 // Section 9 Autonomous Orchestration & Dynamic Provisioning Cluster
   </footer>
+
+  <!-- Modal Agent Details & Export JSON -->
+  <div id="agentModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modalAgentName">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span style="font-size:1.3rem;">🤖</span>
+          <div>
+            <h2 id="modalAgentName" class="modal-title">agent-name</h2>
+            <div style="font-size:0.75rem; color:var(--text-muted);" id="modalAgentDesc">Description de l'agent</div>
+          </div>
+          <span id="modalModelBadge" class="badge-pill mono" style="background:rgba(56,189,248,0.15); color:#38bdf8; border:1px solid rgba(56,189,248,0.3); margin-left:0.5rem;">modèle</span>
+        </div>
+        <button id="modalCloseBtn" class="modal-close" aria-label="Fermer la modal">&times;</button>
+      </div>
+
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-tab="tab-prompt">📝 Instructions (Prompt Système)</button>
+        <button class="modal-tab" data-tab="tab-json">📦 Configuration JSON (Export IDE)</button>
+        <button class="modal-tab" data-tab="tab-params">⚙️ Paramètres & MCP</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Tab 1: System Prompt / Instructions -->
+        <div id="tab-prompt" class="modal-section active">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+            <span style="font-size:0.8rem; color:var(--text-muted); font-weight:600;">Directives & Règles de comportement de l'agent :</span>
+            <button id="btnCopyPrompt" class="btn-copy" style="padding:0.25rem 0.6rem; font-size:0.75rem;">📋 Copier les Instructions</button>
+          </div>
+          <div id="modalPromptContent" class="prompt-box">Chargement des instructions...</div>
+        </div>
+
+        <!-- Tab 2: Export JSON -->
+        <div id="tab-json" class="modal-section">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+            <span style="font-size:0.8rem; color:var(--text-muted); font-weight:600;">Spécification JSON complète (export / modification dans votre IDE) :</span>
+            <div style="display:flex; gap:0.5rem;">
+              <button id="btnCopyJsonTab" class="btn-copy" style="padding:0.25rem 0.6rem; font-size:0.75rem;">📋 Copier JSON</button>
+              <button id="btnDownloadJsonTab" class="btn-export" style="padding:0.25rem 0.6rem; font-size:0.75rem;">📥 Télécharger .json</button>
+            </div>
+          </div>
+          <pre id="modalJsonContent" class="json-code-box">{}</pre>
+        </div>
+
+        <!-- Tab 3: Parameters & Tools -->
+        <div id="tab-params" class="modal-section">
+          <div class="meta-grid">
+            <div class="meta-card">
+              <div class="label">Modèle LLM</div>
+              <div class="value mono" id="metaModel">--</div>
+            </div>
+            <div class="meta-card">
+              <div class="label">Itérations Max (Loop Guard)</div>
+              <div class="value mono" id="metaMaxIterations">--</div>
+            </div>
+            <div class="meta-card">
+              <div class="label">Runs / Exécutions</div>
+              <div class="value mono" id="metaRuns">--</div>
+            </div>
+            <div class="meta-card">
+              <div class="label">Taux de Réussite</div>
+              <div class="value mono" id="metaSuccessRate">--</div>
+            </div>
+          </div>
+
+          <div style="margin-bottom:1rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted); margin-bottom:0.4rem;">Serveurs & Outils MCP</div>
+            <div id="metaMcpServers" style="background:#030712; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:0.75rem; font-size:0.8rem;"></div>
+          </div>
+
+          <div>
+            <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted); margin-bottom:0.4rem;">Variables d'environnement</div>
+            <div id="metaEnvVars" class="mono" style="background:#030712; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:0.75rem; font-size:0.75rem; color:#94a3b8; white-space:pre-wrap;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <div class="modal-actions-left">
+          <button id="btnCopyInstructionsFooter" class="btn-copy">📋 Copier les Instructions</button>
+          <button id="btnCopyJsonFooter" class="btn-copy">📋 Copier la Config JSON</button>
+          <button id="btnDownloadJsonFooter" class="btn-export">📥 Télécharger JSON</button>
+        </div>
+        <button id="btnCloseModalFooter" class="btn-close-modal">Fermer</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     let refreshTimer = null;
@@ -1215,11 +1645,34 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 
       agents.forEach(agent => {
         const tr = document.createElement('tr');
+        tr.className = 'agent-row';
+        tr.title = 'Cliquez pour afficher les instructions et exporter la configuration JSON de ' + agent.name;
+        tr.addEventListener('click', () => openAgentModal(agent));
 
         // Name
         const tdName = document.createElement('td');
         tdName.style.fontWeight = '600';
-        tdName.textContent = agent.name;
+        
+        const nameWrapper = document.createElement('div');
+        nameWrapper.style.display = 'flex';
+        nameWrapper.style.alignItems = 'center';
+        nameWrapper.style.gap = '0.5rem';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = agent.name;
+        nameWrapper.appendChild(nameSpan);
+
+        const inspectPill = document.createElement('span');
+        inspectPill.className = 'badge-pill';
+        inspectPill.style.background = 'rgba(0, 242, 254, 0.1)';
+        inspectPill.style.color = 'var(--accent-cyan)';
+        inspectPill.style.border = '1px solid rgba(0, 242, 254, 0.25)';
+        inspectPill.style.fontSize = '0.68rem';
+        inspectPill.style.cursor = 'pointer';
+        inspectPill.textContent = 'Détails & JSON ↗';
+        nameWrapper.appendChild(inspectPill);
+
+        tdName.appendChild(nameWrapper);
         tr.appendChild(tdName);
 
         // Model
@@ -1465,6 +1918,180 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       await fetch('/api/auth/logout', { method: 'POST' });
       window.location.href = '/login';
+    });
+
+    // Modal & JSON Export Logic
+    let currentSelectedAgent = null;
+
+    function openAgentModal(agent) {
+      currentSelectedAgent = agent;
+      document.getElementById('modalAgentName').textContent = agent.name;
+      document.getElementById('modalAgentDesc').textContent = agent.description || 'Agent spécialisé Section 9';
+      document.getElementById('modalModelBadge').textContent = agent.model;
+
+      // Instructions / System prompt
+      const promptEl = document.getElementById('modalPromptContent');
+      if (agent.system_prompt && agent.system_prompt.trim().length > 0) {
+        promptEl.textContent = agent.system_prompt;
+        promptEl.style.color = '#e2e8f0';
+        promptEl.style.fontStyle = 'normal';
+      } else {
+        promptEl.textContent = "Aucune instruction personnalisée spécifiée (l'agent s'exécute avec les directives système par défaut).";
+        promptEl.style.color = 'var(--text-muted)';
+        promptEl.style.fontStyle = 'italic';
+      }
+
+      // JSON Configuration export for IDE
+      const exportData = {
+        name: agent.name,
+        description: agent.description,
+        model: agent.model,
+        system_prompt: agent.system_prompt || null,
+        mcp_servers: agent.mcp_servers || [],
+        max_iterations: agent.max_iterations || 10,
+        env: agent.env || {},
+        tools_exposed: agent.tools_exposed || []
+      };
+
+      const jsonString = JSON.stringify(exportData, null, 2);
+      document.getElementById('modalJsonContent').textContent = jsonString;
+
+      // Parameters
+      document.getElementById('metaModel').textContent = agent.model;
+      document.getElementById('metaMaxIterations').textContent = (agent.max_iterations || 10) + ' étapes max';
+      document.getElementById('metaRuns').textContent = agent.total_runs + ' (Succès: ' + agent.success_count + ', Échecs: ' + agent.failure_count + ')';
+      
+      const completed = agent.success_count + agent.failure_count;
+      const rate = completed === 0 ? 100 : Math.round((agent.success_count / completed) * 100);
+      document.getElementById('metaSuccessRate').textContent = rate + '%';
+
+      // MCP Servers
+      const mcpEl = document.getElementById('metaMcpServers');
+      mcpEl.replaceChildren();
+      if (agent.mcp_servers && agent.mcp_servers.length > 0) {
+        agent.mcp_servers.forEach(srv => {
+          const srvDiv = document.createElement('div');
+          srvDiv.style.marginBottom = '0.5rem';
+          const cmdArgs = srv.args && srv.args.length > 0 ? ' ' + srv.args.join(' ') : '';
+          srvDiv.innerHTML = '<strong style="color:var(--accent-cyan);">' + srv.name + '</strong>: <span class="mono">' + srv.command + cmdArgs + '</span>';
+          mcpEl.appendChild(srvDiv);
+        });
+      } else if (agent.tools_exposed && agent.tools_exposed.length > 0) {
+        mcpEl.textContent = 'Outils déclarés: ' + agent.tools_exposed.join(', ');
+      } else {
+        mcpEl.textContent = 'Aucun serveur MCP configuré.';
+      }
+
+      // Env vars
+      const envEl = document.getElementById('metaEnvVars');
+      const envKeys = agent.env ? Object.keys(agent.env) : [];
+      if (envKeys.length > 0) {
+        envEl.textContent = envKeys.map(k => k + ' = ' + agent.env[k]).join('\n');
+      } else {
+        envEl.textContent = 'Aucune variable d\'environnement spécifique.';
+      }
+
+      // Switch to first tab
+      switchModalTab('tab-prompt');
+
+      // Open overlay
+      document.getElementById('agentModal').classList.add('active');
+    }
+
+    function closeAgentModal() {
+      document.getElementById('agentModal').classList.remove('active');
+    }
+
+    function switchModalTab(tabId) {
+      document.querySelectorAll('.modal-tab').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-tab') === tabId);
+      });
+      document.querySelectorAll('.modal-section').forEach(sec => {
+        sec.classList.toggle('active', sec.id === tabId);
+      });
+    }
+
+    function copyTextWithFeedback(button, text, successLabel) {
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = button.textContent;
+        button.textContent = '✓ ' + (successLabel || 'Copié !');
+        button.style.borderColor = 'var(--emerald)';
+        button.style.color = 'var(--emerald)';
+        setTimeout(() => {
+          button.textContent = orig;
+          button.style.borderColor = '';
+          button.style.color = '';
+        }, 2000);
+      }).catch(err => {
+        console.error('Erreur copie:', err);
+        alert('Impossible de copier dans le presse-papier.');
+      });
+    }
+
+    function downloadAgentJson(agent) {
+      if (!agent) return;
+      const exportData = {
+        name: agent.name,
+        description: agent.description,
+        model: agent.model,
+        system_prompt: agent.system_prompt || null,
+        mcp_servers: agent.mcp_servers || [],
+        max_iterations: agent.max_iterations || 10,
+        env: agent.env || {},
+        tools_exposed: agent.tools_exposed || []
+      };
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = agent.name + '-config.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // Modal Events Setup
+    document.getElementById('modalCloseBtn').addEventListener('click', closeAgentModal);
+    document.getElementById('btnCloseModalFooter').addEventListener('click', closeAgentModal);
+    document.getElementById('agentModal').addEventListener('click', (e) => {
+      if (e.target.id === 'agentModal') closeAgentModal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeAgentModal();
+    });
+
+    document.querySelectorAll('.modal-tab').forEach(btn => {
+      btn.addEventListener('click', () => switchModalTab(btn.getAttribute('data-tab')));
+    });
+
+    document.getElementById('btnCopyPrompt').addEventListener('click', function() {
+      if (currentSelectedAgent) {
+        copyTextWithFeedback(this, currentSelectedAgent.system_prompt || '', 'Instructions Copiées');
+      }
+    });
+    document.getElementById('btnCopyInstructionsFooter').addEventListener('click', function() {
+      if (currentSelectedAgent) {
+        copyTextWithFeedback(this, currentSelectedAgent.system_prompt || '', 'Instructions Copiées');
+      }
+    });
+
+    document.getElementById('btnCopyJsonTab').addEventListener('click', function() {
+      const code = document.getElementById('modalJsonContent').textContent;
+      copyTextWithFeedback(this, code, 'JSON Copié');
+    });
+    document.getElementById('btnCopyJsonFooter').addEventListener('click', function() {
+      const code = document.getElementById('modalJsonContent').textContent;
+      copyTextWithFeedback(this, code, 'JSON Copié');
+    });
+
+    document.getElementById('btnDownloadJsonTab').addEventListener('click', function() {
+      if (currentSelectedAgent) downloadAgentJson(currentSelectedAgent);
+    });
+    document.getElementById('btnDownloadJsonFooter').addEventListener('click', function() {
+      if (currentSelectedAgent) downloadAgentJson(currentSelectedAgent);
     });
 
     // Initial load

@@ -10,12 +10,16 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 mod auth;
+mod gatekeeper;
 mod k8s;
 mod metrics;
+mod slack;
 mod web;
 
 use auth::{require_auth_middleware, AuthConfig};
+use gatekeeper::{GatekeeperStore, PendingValidation, UserValidationIntent};
 use metrics::MetricsStore;
+use slack::SlackNotifier;
 use web::WebState;
 
 #[derive(Clone)]
@@ -25,6 +29,8 @@ pub struct AppState {
     pub agent_runner_image: String,
     pub metrics: Arc<MetricsStore>,
     pub auth: Arc<AuthConfig>,
+    pub slack_notifier: Arc<SlackNotifier>,
+    pub gatekeeper: Arc<GatekeeperStore>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -37,13 +43,27 @@ pub struct SlackEventPayload {
     pub challenge: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct SlackEventDetail {
     pub r#type: String,
     pub channel: String,
     pub user: Option<String>,
-    pub text: String,
+    #[serde(default)]
+    pub text: Option<String>,
     pub ts: String,
+    pub thread_ts: Option<String>,
+    #[serde(default)]
+    pub files: Vec<SlackFileDetail>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct SlackFileDetail {
+    pub id: String,
+    pub name: Option<String>,
+    pub mimetype: Option<String>,
+    pub filetype: Option<String>,
+    pub url_private_download: Option<String>,
+    pub url_private: Option<String>,
 }
 
 #[tokio::main]
@@ -103,12 +123,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let slack_notifier = Arc::new(SlackNotifier::new());
+    let gatekeeper = Arc::new(GatekeeperStore::new());
+
     let state = Arc::new(AppState {
         k8s_client: k8s_client.clone(),
         namespace: namespace.clone(),
         agent_runner_image: agent_runner_image.clone(),
         metrics: metrics.clone(),
         auth: auth.clone(),
+        slack_notifier: slack_notifier.clone(),
+        gatekeeper: gatekeeper.clone(),
     });
 
     let web_state = Arc::new(WebState {
@@ -117,6 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         namespace: namespace.clone(),
         k8s_client: k8s_client.clone(),
         agent_runner_image: agent_runner_image.clone(),
+        slack_notifier: slack_notifier.clone(),
     });
 
     // Tâche d'arrière-plan : synchronisation périodique des Jobs Kubernetes et statut
@@ -141,10 +167,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(web::dashboard_html_handler))
         .route("/dashboard", get(web::dashboard_html_handler))
         .route("/api/dashboard/stats", get(web::dashboard_stats_handler))
+        .route("/api/agents/:name/config", get(web::agent_config_handler))
         .route("/api/auth/logout", post(web::logout_handler))
         .route("/api/auth/me", get(web::auth_me_handler))
         .route("/api/agents/test-trigger", post(web::test_trigger_handler))
         .route("/api/agents/callback", post(web::agent_callback_handler))
+        .route("/api/slack/send", post(web::slack_send_handler))
         .route_layer(middleware::from_fn(move |req, next| {
             let auth = auth_layer_clone.clone();
             require_auth_middleware(auth, req, next)
@@ -154,6 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Routes publiques & endpoints d'ingestion/métriques
     let public_routes = Router::new()
         .route("/health", get(|| async { "OK - Aramaki active" }))
+        .route("/logo.png", get(web::logo_handler))
+        .route("/favicon.ico", get(web::logo_handler))
         .route("/login", get(web::login_html_handler))
         .route("/api/auth/login", post(web::login_handler))
         .route("/metrics", get(web::prometheus_metrics_handler))
@@ -222,14 +252,41 @@ async fn handle_slack_event(
     state.metrics.record_request(true);
 
     if let Some(event) = payload.event {
-        if event.r#type == "app_mention" || event.r#type == "message" {
-            let prompt_preview = if event.text.len() > 80 {
-                format!("{}...", &event.text[..77])
+        // Détection de fichiers audio ou vidéo
+        let has_audio_video = event.files.iter().any(|f| {
+            let mime = f.mimetype.as_deref().unwrap_or("");
+            let name = f.name.as_deref().unwrap_or("");
+            mime.starts_with("audio/")
+                || mime.starts_with("video/")
+                || name.ends_with(".mp3")
+                || name.ends_with(".wav")
+                || name.ends_with(".m4a")
+                || name.ends_with(".ogg")
+                || name.ends_with(".mp4")
+                || name.ends_with(".mov")
+                || name.ends_with(".webm")
+        });
+
+        let text_content = event.text.clone().unwrap_or_default();
+        let should_trigger = state
+            .gatekeeper
+            .should_trigger(
+                &event.r#type,
+                &text_content,
+                &event.channel,
+                event.thread_ts.as_deref(),
+                has_audio_video,
+            )
+            .await;
+
+        if should_trigger {
+            let prompt_preview = if text_content.len() > 80 {
+                format!("{}...", &text_content[..77])
             } else {
-                event.text.clone()
+                text_content.clone()
             };
             info!(
-                "[ACTION] 📩 Événement Slack reçu (canal: '{}', user: '{:?}') - Extrait: \"{}\"",
+                "[ACTION] 📩 Déclencheur Amaraki activé (canal: '{}', user: '{:?}') - \"{}\"",
                 event.channel, event.user, prompt_preview
             );
             let state_clone = state.clone();
@@ -247,63 +304,238 @@ async fn handle_slack_event(
 async fn process_agent_request(
     state: Arc<AppState>,
     event: SlackEventDetail,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let parts: Vec<&str> = event.text.split_whitespace().collect();
-    let agent_name = parts
-        .iter()
-        .find(|p| p.starts_with("agent-"))
-        .copied()
-        .unwrap_or("agent-code-reviewer");
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let thread_id = event.thread_ts.clone().unwrap_or_else(|| event.ts.clone());
+    let session_key = GatekeeperStore::make_key(&event.channel, Some(&thread_id));
 
-    info!(
-        "[ACTION] 🎯 Requête agent Slack: Agent '{}' sollicité pour le canal '{}'",
-        agent_name, event.channel
+    let mut instruction_text = event.text.clone().unwrap_or_default();
+
+    // 1. Traitement des médias (fichiers audio ou vidéo)
+    for file in &event.files {
+        let mime = file.mimetype.as_deref().unwrap_or("");
+        let name = file.name.as_deref().unwrap_or("media.mp3");
+        if mime.starts_with("audio/")
+            || mime.starts_with("video/")
+            || name.ends_with(".mp3")
+            || name.ends_with(".wav")
+            || name.ends_with(".m4a")
+        {
+            if let Some(download_url) = file
+                .url_private_download
+                .as_ref()
+                .or(file.url_private.as_ref())
+            {
+                let slack_token = std::env::var("SLACK_BOT_TOKEN").ok();
+                state
+                    .slack_notifier
+                    .post_message(
+                        &event.channel,
+                        "🎙️ *Chef Amaraki* : Fichier audio/vidéo détecté. Récupération du flux et transcription en cours...",
+                        Some(&thread_id),
+                    )
+                    .await;
+
+                match state
+                    .gatekeeper
+                    .transcribe_slack_media(download_url, slack_token.as_deref(), name)
+                    .await
+                {
+                    Ok(transcription) => {
+                        instruction_text = transcription;
+                        let notice =
+                            format!("📝 *Transcription vocale* : « {} »", instruction_text);
+                        state
+                            .slack_notifier
+                            .post_message(&event.channel, &notice, Some(&thread_id))
+                            .await;
+                    }
+                    Err(e) => {
+                        error!("[GATEKEEPER] Erreur transcription: {:?}", e);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // 2. Étape Gatekeeper : Vérification si une validation est en attente
+    if let Some(pending) = state.gatekeeper.get_pending(&session_key).await {
+        match GatekeeperStore::parse_validation(&instruction_text) {
+            UserValidationIntent::Yes => {
+                // "Oui : Lancement de l'action."
+                state.gatekeeper.remove_pending(&session_key).await;
+                let launch_msg = format!(
+                    "🚀 *Chef Amaraki* : Accord reçu. Lancement immédiat de l'action avec l'agent *{}*...",
+                    pending.agent_name
+                );
+                state
+                    .slack_notifier
+                    .post_message(&event.channel, &launch_msg, Some(&thread_id))
+                    .await;
+
+                if let Some(ref client) = state.k8s_client {
+                    let exists = k8s::check_agent_configmap_exists(
+                        client,
+                        &state.namespace,
+                        &pending.agent_name,
+                    )
+                    .await?;
+                    if !exists {
+                        let err_msg = format!(
+                            "⚠️ *Chef Amaraki* : Déploiement refusé. ConfigMap de l'agent `{}` introuvable dans `{}`.",
+                            pending.agent_name, state.namespace
+                        );
+                        state
+                            .slack_notifier
+                            .post_message(&event.channel, &err_msg, Some(&thread_id))
+                            .await;
+                        state.metrics.record_request(false);
+                        return Ok(());
+                    }
+
+                    match k8s::spawn_agent_job(
+                        client,
+                        &state.namespace,
+                        &state.agent_runner_image,
+                        &pending.agent_name,
+                        &pending.full_prompt,
+                        &event.channel,
+                        &thread_id,
+                        &state.metrics,
+                    )
+                    .await
+                    {
+                        Ok(job_id) => {
+                            let success_msg = format!(
+                                "✅ *Job K8s créé* : `{}`\n• *Agent* : *{}*\n• *Namespace* : `{}`\nL'agent exécute sa mission...",
+                                job_id, pending.agent_name, state.namespace
+                            );
+                            state
+                                .slack_notifier
+                                .post_message(&event.channel, &success_msg, Some(&thread_id))
+                                .await;
+                        }
+                        Err(e) => {
+                            let err_msg = format!(
+                                "💥 *Erreur de déploiement Job K8s* pour `{}` : {}",
+                                pending.agent_name, e
+                            );
+                            state
+                                .slack_notifier
+                                .post_message(&event.channel, &err_msg, Some(&thread_id))
+                                .await;
+                            return Err(e.into());
+                        }
+                    }
+                } else {
+                    let sim_id = format!(
+                        "{}-sim-{}",
+                        pending.agent_name,
+                        &uuid::Uuid::new_v4().to_string()[..8]
+                    );
+                    let sim_msg = format!(
+                        "🤖 *Chef Amaraki* : [Mode autonome] Simulation de mission lancée pour `{}` (ID: `{}`).",
+                        pending.agent_name, sim_id
+                    );
+                    state
+                        .slack_notifier
+                        .post_message(&event.channel, &sim_msg, Some(&thread_id))
+                        .await;
+                    state
+                        .metrics
+                        .record_agent_spawn(
+                            &sim_id,
+                            &pending.agent_name,
+                            "opencode/free-default-model",
+                            &event.channel,
+                            &pending.full_prompt,
+                        )
+                        .await;
+                }
+                return Ok(());
+            }
+            UserValidationIntent::No => {
+                // "Non : Demande de clarification ou correction par l'utilisateur."
+                let clarify_msg = "Pouvez-vous préciser ce que vous souhaitez corriger ou modifier ? (Décrivez vos ajustements ou répondez Stop pour annuler)".to_string();
+                state
+                    .slack_notifier
+                    .post_message(&event.channel, &clarify_msg, Some(&thread_id))
+                    .await;
+
+                let mut updated = pending;
+                updated.awaiting_clarification = true;
+                state.gatekeeper.set_pending(session_key, updated).await;
+                return Ok(());
+            }
+            UserValidationIntent::Stop => {
+                // "Stop : Annulation immédiate et clôture de la tâche en cours."
+                state.gatekeeper.remove_pending(&session_key).await;
+                let stop_msg = "🛑 *Chef Amaraki* : Action annulée et tâche clôturée.".to_string();
+                state
+                    .slack_notifier
+                    .post_message(&event.channel, &stop_msg, Some(&thread_id))
+                    .await;
+                return Ok(());
+            }
+            UserValidationIntent::NewInstruction(clarification) => {
+                if pending.awaiting_clarification {
+                    // Intègre la correction et reformule la demande de validation
+                    let combined_prompt =
+                        format!("{} (Précision: {})", pending.full_prompt, clarification);
+                    let (agent, summary) = GatekeeperStore::analyze_intent(&combined_prompt);
+
+                    let validation_msg = format!(
+                        "J'ai compris que vous souhaitez {}. Êtes-vous d'accord ? (Répondez par Oui, Non ou Stop)",
+                        summary
+                    );
+
+                    let new_pending = PendingValidation {
+                        channel: event.channel.clone(),
+                        thread_ts: thread_id.clone(),
+                        user: event.user.clone(),
+                        agent_name: agent,
+                        action_summary: summary,
+                        full_prompt: combined_prompt,
+                        awaiting_clarification: false,
+                        created_at: chrono::Utc::now(),
+                    };
+                    state.gatekeeper.set_pending(session_key, new_pending).await;
+                    state
+                        .slack_notifier
+                        .post_message(&event.channel, &validation_msg, Some(&thread_id))
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // 3. Nouvelle instruction : Analyse d'intention et Demande formelle de validation
+    let (agent_name, action_summary) = GatekeeperStore::analyze_intent(&instruction_text);
+
+    // Formule exacte spécifiée :
+    // "J'ai compris que vous souhaitez [résumé de l'action]. Êtes-vous d'accord ? (Répondez par Oui, Non ou Stop)"
+    let validation_question = format!(
+        "J'ai compris que vous souhaitez {}. Êtes-vous d'accord ? (Répondez par Oui, Non ou Stop)",
+        action_summary
     );
 
-    if let Some(ref client) = state.k8s_client {
-        let exists =
-            k8s::check_agent_configmap_exists(client, &state.namespace, agent_name).await?;
-        if !exists {
-            warn!(
-                "[ACTION] ⚠️ Déploiement refusé: ConfigMap introuvable pour l'agent '{}' dans le namespace '{}'",
-                agent_name, state.namespace
-            );
-            state.metrics.record_request(false);
-            return Ok(());
-        }
+    let pending = PendingValidation {
+        channel: event.channel.clone(),
+        thread_ts: thread_id.clone(),
+        user: event.user.clone(),
+        agent_name,
+        action_summary,
+        full_prompt: instruction_text,
+        awaiting_clarification: false,
+        created_at: chrono::Utc::now(),
+    };
 
-        k8s::spawn_agent_job(
-            client,
-            &state.namespace,
-            &state.agent_runner_image,
-            agent_name,
-            &event.text,
-            &event.channel,
-            &event.ts,
-            &state.metrics,
-        )
-        .await?;
-    } else {
-        info!(
-            "[ACTION] 🤖 Mode autonome : simulation du lancement de l'agent {}",
-            agent_name
-        );
-        let sim_id = format!(
-            "{}-sim-{}",
-            agent_name,
-            &uuid::Uuid::new_v4().to_string()[..8]
-        );
-        state
-            .metrics
-            .record_agent_spawn(
-                &sim_id,
-                agent_name,
-                "opencode/free-default-model",
-                &event.channel,
-                &event.text,
-            )
-            .await;
-    }
+    state.gatekeeper.set_pending(session_key, pending).await;
+    state
+        .slack_notifier
+        .post_message(&event.channel, &validation_question, Some(&thread_id))
+        .await;
 
     Ok(())
 }

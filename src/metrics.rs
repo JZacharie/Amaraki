@@ -38,6 +38,14 @@ pub struct AgentStats {
     pub running_count: u64,
     pub total_duration_secs: f64,
     pub last_run: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub mcp_servers: Option<Vec<crate::k8s::McpServerConfig>>,
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 impl AgentStats {
@@ -58,6 +66,10 @@ impl AgentStats {
             running_count: 0,
             total_duration_secs: 0.0,
             last_run: None,
+            system_prompt: None,
+            mcp_servers: None,
+            max_iterations: None,
+            env: HashMap::new(),
         }
     }
 
@@ -175,6 +187,31 @@ impl MetricsStore {
         description: &str,
         tools: Vec<String>,
     ) {
+        self.register_agent_full(
+            name,
+            model,
+            description,
+            tools,
+            None,
+            None,
+            None,
+            HashMap::new(),
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_agent_full(
+        &self,
+        name: &str,
+        model: &str,
+        description: &str,
+        tools: Vec<String>,
+        system_prompt: Option<String>,
+        mcp_servers: Option<Vec<crate::k8s::McpServerConfig>>,
+        max_iterations: Option<u32>,
+        env: HashMap<String, String>,
+    ) {
         let mut agents = self.agent_stats.write().await;
         let entry = agents.entry(name.to_string()).or_insert_with(|| {
             AgentStats::new(
@@ -189,6 +226,11 @@ impl MetricsStore {
         if !description.is_empty() {
             entry.description = description.to_string();
         }
+        entry.system_prompt = system_prompt;
+        entry.mcp_servers = mcp_servers;
+        entry.max_iterations = max_iterations;
+        entry.env = env;
+
         for tool in &tools {
             if !entry.tools_exposed.contains(tool) {
                 entry.tools_exposed.push(tool.clone());
@@ -207,6 +249,11 @@ impl MetricsStore {
                 t_entry.agents.push(name.to_string());
             }
         }
+    }
+
+    pub async fn get_agent(&self, name: &str) -> Option<AgentStats> {
+        let stats = self.agent_stats.read().await;
+        stats.get(name).cloned()
     }
 
     pub async fn record_agent_spawn(

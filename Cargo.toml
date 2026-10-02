@@ -13,7 +13,7 @@ kube = { version = "0.90", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.21", features = ["v1_28"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 uuid = { version = "1.8", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
