@@ -45,7 +45,8 @@ pub struct LoginResponse {
 impl AuthConfig {
     pub fn from_env() -> Self {
         let username = std::env::var("ARAMAKI_AUTH_USER").unwrap_or_else(|_| "admin".to_string());
-        let password = std::env::var("ARAMAKI_AUTH_PASSWORD").unwrap_or_else(|_| "section9".to_string());
+        let password =
+            std::env::var("ARAMAKI_AUTH_PASSWORD").unwrap_or_else(|_| "section9".to_string());
 
         let api_key = std::env::var("ARAMAKI_API_KEY").ok();
         let allow_anonymous_metrics = std::env::var("ARAMAKI_ALLOW_ANONYMOUS_METRICS")
@@ -156,14 +157,83 @@ pub fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+pub fn extract_client_ip(headers: &HeaderMap) -> String {
+    if let Some(forwarded) = headers.get("x-forwarded-for") {
+        if let Ok(val) = forwarded.to_str() {
+            if let Some(first) = val.split(',').next() {
+                return first.trim().to_string();
+            }
+        }
+    }
+    if let Some(real_ip) = headers.get("x-real-ip") {
+        if let Ok(val) = real_ip.to_str() {
+            return val.trim().to_string();
+        }
+    }
+    "cluster-local".to_string()
+}
+
+/// Global Access Logger Middleware
+pub async fn access_log_middleware(
+    auth: Arc<AuthConfig>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let path = uri.path().to_string();
+    let ip = extract_client_ip(request.headers());
+
+    let user = if let Some(token) = extract_session_cookie(request.headers()) {
+        auth.validate_token(&token)
+            .await
+            .unwrap_or_else(|| "unauthenticated".to_string())
+    } else if let Some((u, _)) = extract_basic_auth(request.headers()) {
+        u
+    } else if extract_bearer_token(request.headers()).is_some() {
+        "api-key".to_string()
+    } else {
+        "anonymous".to_string()
+    };
+
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    let duration = start.elapsed();
+    let status = response.status();
+
+    if path == "/health" && status == StatusCode::OK {
+        tracing::debug!(
+            "[ACCESS] {} {} -> {} in {:.2?}",
+            method,
+            path,
+            status.as_u16(),
+            duration
+        );
+    } else {
+        info!(
+            "[ACCESS] {} {} -> {} in {:.2?} | ip: {} | user: {}",
+            method,
+            path,
+            status.as_u16(),
+            duration,
+            ip,
+            user
+        );
+    }
+
+    response
+}
+
 /// Middleware to enforce authentication on protected routes
 pub async fn require_auth_middleware(
     auth: Arc<AuthConfig>,
     request: Request,
     next: Next,
 ) -> Response {
+    let method = request.method().clone();
     let path = request.uri().path().to_string();
     let headers = request.headers();
+    let ip = extract_client_ip(headers);
 
     // 1. Check Session Cookie
     if let Some(token) = extract_session_cookie(headers) {
@@ -185,6 +255,13 @@ pub async fn require_auth_middleware(
             return next.run(request).await;
         }
     }
+
+    tracing::warn!(
+        "[SECURITY] ⛔ Tentative d'accès non autorisée: {} {} | ip: {}",
+        method,
+        path,
+        ip
+    );
 
     // Unauthenticated handling
     if path.starts_with("/api/") {

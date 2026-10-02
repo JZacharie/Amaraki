@@ -174,7 +174,10 @@ pub async fn spawn_agent_job(
     .unwrap();
 
     jobs.create(&Default::default(), &job_manifest).await?;
-    info!("Job K8s créé par Aramaki : {}", job_id);
+    info!(
+        "[ACTION] 🚀 Pilotage K8s: Job '{}' créé avec succès pour l'agent '{}' (modèle: '{}', namespace: '{}', canal: '{}')",
+        job_id, agent_name, model, ns, channel
+    );
 
     // Record spawn in metrics store
     metrics
@@ -223,9 +226,17 @@ pub async fn sync_jobs(
                 } else {
                     None
                 };
+                info!(
+                    "[ACTION] 🏁 Fin de mission Job K8s: '{}' terminé avec SUCCÈS (durée: {:?}s)",
+                    name, duration
+                );
                 metrics.record_agent_completion(&name, true, duration).await;
             } else if failed > 0 {
                 // Completed with failure
+                tracing::error!(
+                    "[ACTION] 💥 Échec Job K8s: '{}' a ÉCHOUÉ dans le cluster",
+                    name
+                );
                 metrics.record_agent_completion(&name, false, None).await;
             }
         }

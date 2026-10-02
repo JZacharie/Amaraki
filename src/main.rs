@@ -48,7 +48,12 @@ pub struct SlackEventDetail {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,aramaki=info".into());
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .init();
 
     info!("=== Démarrage d'Aramaki (Chief Section 9 Agent Orchestrator & Observability) ===");
 
@@ -63,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let k8s_client = match kube::Client::try_default().await {
         Ok(client) => {
             info!(
-                "Connexion réussie à l'API Kubernetes dans le namespace '{}'",
+                "[ACTION] 🔌 Connexion réussie à l'API Kubernetes dans le namespace '{}'",
                 namespace
             );
             metrics.set_k8s_connected(true);
@@ -72,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match k8s::discover_all_agents(&client, &namespace, &metrics).await {
                 Ok(count) => {
                     info!(
-                        "{} agent(s) découvert(s) depuis les ConfigMaps Kubernetes",
+                        "[ACTION] 🔍 Découverte K8s: {} agent(s) découvert(s) depuis les ConfigMaps Kubernetes",
                         count
                     );
                     if count == 0 {
@@ -80,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => {
-                    warn!("Impossible de lister les ConfigMaps ({}), chargement des agents par défaut", e);
+                    warn!("[ACTION] ⚠️ Impossible de lister les ConfigMaps ({}), chargement des agents par défaut", e);
                     k8s::seed_default_agents(&metrics).await;
                 }
             }
@@ -89,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => {
             warn!(
-                "API Kubernetes non disponible (mode autonome/hors cluster : {}) - Mode simulé actif",
+                "[ACTION] ⚠️ API Kubernetes non disponible (mode autonome/hors cluster : {}) - Mode simulé actif",
                 e
             );
             metrics.set_k8s_connected(false);
@@ -163,11 +168,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/slack/events", post(handle_slack_event))
         .with_state(state.clone());
 
-    // Assemblage de l'application
+    // Assemblage de l'application avec Access Logger global
+    let auth_log_clone = auth.clone();
     let app = Router::new()
         .merge(public_routes)
         .merge(slack_route)
-        .merge(protected_routes);
+        .merge(protected_routes)
+        .layer(middleware::from_fn(move |req, next| {
+            let auth = auth_log_clone.clone();
+            auth::access_log_middleware(auth, req, next)
+        }));
 
     let host = std::env::var("ARAMAKI_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")
@@ -178,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = SocketAddr::new(host.parse()?, port);
     info!(
-        "Interface Web & Orchestrateur Aramaki accessibles sur http://{}",
+        "[ACTION] 🌐 Interface Web & Orchestrateur Aramaki accessibles sur http://{}",
         addr
     );
     info!("Dashboard Web sécurisé : http://{}/", addr);
@@ -213,10 +223,19 @@ async fn handle_slack_event(
 
     if let Some(event) = payload.event {
         if event.r#type == "app_mention" || event.r#type == "message" {
+            let prompt_preview = if event.text.len() > 80 {
+                format!("{}...", &event.text[..77])
+            } else {
+                event.text.clone()
+            };
+            info!(
+                "[ACTION] 📩 Événement Slack reçu (canal: '{}', user: '{:?}') - Extrait: \"{}\"",
+                event.channel, event.user, prompt_preview
+            );
             let state_clone = state.clone();
             tokio::spawn(async move {
                 if let Err(e) = process_agent_request(state_clone, event).await {
-                    error!("Erreur traitement agent: {:?}", e);
+                    error!("[ACTION] 💥 Erreur traitement agent: {:?}", e);
                 }
             });
         }
@@ -237,7 +256,7 @@ async fn process_agent_request(
         .unwrap_or("agent-code-reviewer");
 
     info!(
-        "Reçu demande pour l'agent '{}' sur le canal {}",
+        "[ACTION] 🎯 Requête agent Slack: Agent '{}' sollicité pour le canal '{}'",
         agent_name, event.channel
     );
 
@@ -245,7 +264,10 @@ async fn process_agent_request(
         let exists =
             k8s::check_agent_configmap_exists(client, &state.namespace, agent_name).await?;
         if !exists {
-            warn!("ConfigMap introuvable pour l'agent {}", agent_name);
+            warn!(
+                "[ACTION] ⚠️ Déploiement refusé: ConfigMap introuvable pour l'agent '{}' dans le namespace '{}'",
+                agent_name, state.namespace
+            );
             state.metrics.record_request(false);
             return Ok(());
         }
@@ -263,7 +285,7 @@ async fn process_agent_request(
         .await?;
     } else {
         info!(
-            "Mode autonome : simulation du lancement de l'agent {}",
+            "[ACTION] 🤖 Mode autonome : simulation du lancement de l'agent {}",
             agent_name
         );
         let sim_id = format!(

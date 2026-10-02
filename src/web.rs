@@ -129,12 +129,19 @@ pub async fn opentelemetry_metrics_handler(
 // Auth Login handler
 pub async fn login_handler(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Json(payload): Json<LoginPayload>,
 ) -> impl IntoResponse {
+    let client_ip = crate::auth::extract_client_ip(&headers);
     if state
         .auth
         .validate_credentials(&payload.username, &payload.password)
     {
+        tracing::info!(
+            "[AUTH] ✅ Connexion réussie pour l'utilisateur '{}' | ip: {}",
+            payload.username,
+            client_ip
+        );
         let session_token = state.auth.create_session(&payload.username).await;
         let cookie_val = format!(
             "aramaki_session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400",
@@ -159,6 +166,11 @@ pub async fn login_handler(
 
         response
     } else {
+        tracing::warn!(
+            "[AUTH] ❌ Échec d'authentification pour l'utilisateur '{}' | ip: {}",
+            payload.username,
+            client_ip
+        );
         (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -175,9 +187,11 @@ pub async fn logout_handler(
     State(state): State<Arc<WebState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let client_ip = crate::auth::extract_client_ip(&headers);
     if let Some(token) = crate::auth::extract_session_cookie(&headers) {
         state.auth.invalidate_session(&token).await;
     }
+    tracing::info!("[AUTH] 🚪 Déconnexion utilisateur | ip: {}", client_ip);
 
     let cookie_clear = "aramaki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
     let mut response = (
@@ -225,6 +239,14 @@ pub async fn agent_callback_handler(
     State(state): State<Arc<WebState>>,
     Json(payload): Json<AgentCallbackPayload>,
 ) -> impl IntoResponse {
+    tracing::info!(
+        "[ACTION] 📡 Callback reçu pour le job '{}': succès={}, durée={:?}s, outils={:?}",
+        payload.job_id,
+        payload.success,
+        payload.duration_secs,
+        payload.tool_calls
+    );
+
     state
         .metrics
         .record_agent_completion(&payload.job_id, payload.success, payload.duration_secs)
@@ -242,8 +264,10 @@ pub async fn agent_callback_handler(
 // Test trigger handler to spawn an agent on demand
 pub async fn test_trigger_handler(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Json(payload): Json<TestTriggerPayload>,
 ) -> impl IntoResponse {
+    let client_ip = crate::auth::extract_client_ip(&headers);
     state.metrics.record_request(true);
 
     let channel = payload
@@ -251,6 +275,14 @@ pub async fn test_trigger_handler(
         .unwrap_or_else(|| "#section-9-command".to_string());
     let prompt = payload.prompt;
     let agent_name = payload.agent_name;
+
+    tracing::info!(
+        "[ACTION] 🧪 Déclencheur manuel: Lancement de l'agent '{}' depuis le Dashboard (canal: '{}', prompt: \"{}\") | ip: {}",
+        agent_name,
+        channel,
+        prompt,
+        client_ip
+    );
 
     if let Some(ref client) = state.k8s_client {
         match crate::k8s::spawn_agent_job(
