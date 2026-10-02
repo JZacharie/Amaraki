@@ -518,20 +518,13 @@ async fn process_agent_request(
                                     let raw_logs = k8s::get_job_pod_logs(&client_clone, &ns_clone, &job_id_clone)
                                         .await
                                         .unwrap_or_default();
-                                    let formatted = k8s::format_agent_output(&raw_logs);
+                                    let analysis = k8s::analyze_agent_mission_result(&raw_logs, succeeded > 0);
 
-                                    let icon = if succeeded > 0 { "🏁" } else { "⚠️" };
-                                    let status_label = if succeeded > 0 {
-                                        "Mission accomplie avec succès"
-                                    } else if failed > 0 {
-                                        "Mission terminée en échec"
-                                    } else {
-                                        "Délai d'attente dépassé (timeout)"
-                                    };
+                                    let icon = if analysis.is_real_success { "🏁" } else { "⚠️" };
 
                                     let final_msg = format!(
                                         "{} *Chef Aramaki* : Compte-rendu de mission pour *{}* (Job: `{}`)\n*Statut* : {}\n\n```\n{}\n```",
-                                        icon, agent_name_clone, job_id_clone, status_label, formatted
+                                        icon, agent_name_clone, job_id_clone, analysis.summary_note, analysis.formatted_output
                                     );
 
                                     notifier_clone

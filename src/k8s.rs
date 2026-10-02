@@ -472,16 +472,17 @@ pub async fn check_agent_mcp_readiness(
                 if let Some(ref url) = s.url {
                     // Vérifier si l'URL est interne au cluster (ex: .svc.cluster.local)
                     if url.contains(".svc.cluster.local") {
-                        // Extraction du nom de service K8s si possible
-                        if let Some(host) = url.split("://").nth(1).and_then(|h| h.split(':').next()).and_then(|h| h.split('/').next()) {
-                            let parts: Vec<&str> = host.split('.').collect();
-                            if parts.len() >= 2 {
-                                let svc_name = parts[0];
-                                let svc_ns = parts[1];
-                                let svcs: Api<k8s_openapi::api::core::v1::Service> = Api::namespaced(client.clone(), svc_ns);
-                                if svcs.get(svc_name).await.is_err() {
-                                    warnings.push(format!("Serveur MCP `{}` configuré sur `{}` mais le Service K8s `{}/{}` est introuvable !", s.name, url, svc_ns, svc_name));
-                                }
+                        // Extraction du host (sans protocole, sans chemin, sans port)
+                        let after_proto = url.split("://").nth(1).unwrap_or(url);
+                        let host_and_port = after_proto.split('/').next().unwrap_or(after_proto);
+                        let host = host_and_port.split(':').next().unwrap_or(host_and_port);
+                        let parts: Vec<&str> = host.split('.').collect();
+                        if parts.len() >= 2 {
+                            let svc_name = parts[0];
+                            let svc_ns = parts[1];
+                            let svcs: Api<k8s_openapi::api::core::v1::Service> = Api::namespaced(client.clone(), svc_ns);
+                            if svcs.get(svc_name).await.is_err() {
+                                warnings.push(format!("Serveur MCP `{}` configuré sur `{}` mais le Service K8s `{}/{}` est introuvable !", s.name, url, svc_ns, svc_name));
                             }
                         }
                     }
@@ -492,6 +493,47 @@ pub async fn check_agent_mcp_readiness(
         }
     }
     warnings
+}
+
+pub struct AgentMissionAnalysis {
+    pub formatted_output: String,
+    pub is_real_success: bool,
+    pub summary_note: String,
+}
+
+pub fn analyze_agent_mission_result(raw_logs: &str, k8s_succeeded: bool) -> AgentMissionAnalysis {
+    let lower = raw_logs.to_lowercase();
+    let has_missing_tool_signal = lower.contains("could not resolve host")
+        || lower.contains("no such file or directory")
+        || lower.contains("failed to run command")
+        || lower.contains("impossible d'accéder")
+        || lower.contains("aucun client")
+        || lower.contains("pas d'outil")
+        || lower.contains("outils mcp absents")
+        || lower.contains("auto-rejecting")
+        || lower.contains("connection refused");
+
+    let formatted = format_agent_output(raw_logs);
+
+    if !k8s_succeeded {
+        AgentMissionAnalysis {
+            formatted_output: formatted,
+            is_real_success: false,
+            summary_note: "Échec d'exécution du Job (processus terminé en erreur)".to_string(),
+        }
+    } else if has_missing_tool_signal {
+        AgentMissionAnalysis {
+            formatted_output: formatted,
+            is_real_success: false,
+            summary_note: "Exécution complétée mais mission NON accomplie : outils ou serveurs MCP manquants/inaccessibles.".to_string(),
+        }
+    } else {
+        AgentMissionAnalysis {
+            formatted_output: formatted,
+            is_real_success: true,
+            summary_note: "Mission accomplie avec succès".to_string(),
+        }
+    }
 }
 
 pub fn format_agent_output(raw_logs: &str) -> String {
