@@ -201,6 +201,37 @@ pub async fn spawn_agent_job(
         for (k, v) in &cfg.env {
             env_list.push(json!({ "name": k, "value": v }));
         }
+
+        let mut opencode_config = json!({
+            "$schema": "https://opencode.ai/config.json"
+        });
+
+        if let Some(prompt) = &cfg.system_prompt {
+            opencode_config["instructions"] = json!([prompt]);
+        }
+
+        if let Some(servers) = &cfg.mcp_servers {
+            let mut mcp_map = serde_json::Map::new();
+            for s in servers {
+                let mut cmd = Vec::new();
+                if let Some(c) = &s.command {
+                    cmd.push(c.clone());
+                }
+                cmd.extend(s.args.clone());
+                mcp_map.insert(
+                    s.name.clone(),
+                    json!({
+                        "type": "local",
+                        "command": cmd
+                    }),
+                );
+            }
+            opencode_config["mcp"] = serde_json::Value::Object(mcp_map);
+        }
+
+        if let Ok(config_str) = serde_json::to_string(&opencode_config) {
+            env_list.push(json!({ "name": "OPENCODE_CONFIG_CONTENT", "value": config_str }));
+        }
     }
 
     let env_from = vec![
@@ -268,7 +299,9 @@ pub async fn spawn_agent_job(
                         "name": "opencode-agent",
                         "image": agent_runner_image,
                         "command": ["/bin/sh", "-c"],
-                        "args": ["opencode run \"$USER_PROMPT\""],
+                        "args": [
+                            "mkdir -p ~/.config/opencode && if [ -n \"$OPENCODE_CONFIG_CONTENT\" ]; then echo \"$OPENCODE_CONFIG_CONTENT\" > ~/.config/opencode/opencode.jsonc; fi && opencode run \"$USER_PROMPT\""
+                        ],
                         "securityContext": {
                             "runAsNonRoot": true,
                             "runAsUser": 1000,
