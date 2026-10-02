@@ -79,6 +79,11 @@ impl GatekeeperStore {
         thread_ts: Option<&str>,
         has_media: bool,
     ) -> bool {
+        // Condition 0: Message direct (DM / IM) dans l'onglet messages
+        if channel.starts_with('D') {
+            return true;
+        }
+
         // Condition 1: Direct app_mention event
         if event_type == "app_mention" {
             return true;

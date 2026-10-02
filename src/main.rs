@@ -54,6 +54,8 @@ pub struct SlackEventDetail {
     pub thread_ts: Option<String>,
     #[serde(default)]
     pub files: Vec<SlackFileDetail>,
+    pub bot_id: Option<String>,
+    pub subtype: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -252,6 +254,24 @@ async fn handle_slack_event(
     state.metrics.record_request(true);
 
     if let Some(event) = payload.event {
+        // Ignorer les messages générés par les bots pour éviter toute boucle infinie
+        if event.bot_id.is_some() || event.subtype.as_deref() == Some("bot_message") {
+            return Ok(Json(serde_json::json!({ "status": "ignored_bot_message" })));
+        }
+
+        let user_id = event.user.as_deref().unwrap_or("inconnu");
+        let text_content = event.text.clone().unwrap_or_default();
+        let channel_type = if event.channel.starts_with('D') {
+            "DM"
+        } else {
+            "Canal"
+        };
+
+        info!(
+            "[SLACK] 📥 [{}] Message reçu de '{}' sur {} (thread: {:?}): \"{}\"",
+            channel_type, user_id, event.channel, event.thread_ts, text_content
+        );
+
         // Détection de fichiers audio ou vidéo
         let has_audio_video = event.files.iter().any(|f| {
             let mime = f.mimetype.as_deref().unwrap_or("");
@@ -267,7 +287,6 @@ async fn handle_slack_event(
                 || name.ends_with(".webm")
         });
 
-        let text_content = event.text.clone().unwrap_or_default();
         let should_trigger = state
             .gatekeeper
             .should_trigger(
@@ -286,8 +305,8 @@ async fn handle_slack_event(
                 text_content.clone()
             };
             info!(
-                "[ACTION] 📩 Déclencheur Amaraki activé (canal: '{}', user: '{:?}') - \"{}\"",
-                event.channel, event.user, prompt_preview
+                "[ACTION] 📩 Déclencheur Amaraki activé (canal: '{}', user: '{}') - \"{}\"",
+                event.channel, user_id, prompt_preview
             );
             let state_clone = state.clone();
             tokio::spawn(async move {
@@ -510,7 +529,18 @@ async fn process_agent_request(
         }
     }
 
-    // 3. Nouvelle instruction : Analyse d'intention et Demande formelle de validation
+    // 3. Accusé de réception immédiat dans le fil de discussion Slack
+    let ack_msg = "🫡 *Chef Aramaki (Section 9)* : Bien reçu. Requête en cours d'analyse...";
+    state
+        .slack_notifier
+        .post_message(&event.channel, ack_msg, Some(&thread_id))
+        .await;
+    info!(
+        "[SLACK] 🫡 Accusé de réception envoyé dans le thread {:?} (canal: {})",
+        thread_id, event.channel
+    );
+
+    // Analyse d'intention et Demande formelle de validation
     let (agent_name, action_summary) = GatekeeperStore::analyze_intent(&instruction_text);
 
     // Formule exacte spécifiée :
