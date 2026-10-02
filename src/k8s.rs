@@ -1,7 +1,7 @@
 use crate::metrics::MetricsStore;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::ConfigMap;
-use kube::api::ListParams;
+use k8s_openapi::api::core::v1::{ConfigMap, Pod};
+use kube::api::{ListParams, LogParams};
 use kube::Api;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,6 +23,9 @@ pub struct AgentConfigMapData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
+    #[serde(rename = "type")]
+    pub server_type: Option<String>,
+    pub url: Option<String>,
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
@@ -215,18 +218,28 @@ pub async fn spawn_agent_job(
         if let Some(servers) = &cfg.mcp_servers {
             let mut mcp_map = serde_json::Map::new();
             for s in servers {
-                let mut cmd = Vec::new();
-                if let Some(c) = &s.command {
-                    cmd.push(c.clone());
+                if let Some(ref url) = s.url {
+                    mcp_map.insert(
+                        s.name.clone(),
+                        json!({
+                            "type": "remote",
+                            "url": url
+                        }),
+                    );
+                } else {
+                    let mut cmd = Vec::new();
+                    if let Some(c) = &s.command {
+                        cmd.push(c.clone());
+                    }
+                    cmd.extend(s.args.clone());
+                    mcp_map.insert(
+                        s.name.clone(),
+                        json!({
+                            "type": "local",
+                            "command": cmd
+                        }),
+                    );
                 }
-                cmd.extend(s.args.clone());
-                mcp_map.insert(
-                    s.name.clone(),
-                    json!({
-                        "type": "local",
-                        "command": cmd
-                    }),
-                );
             }
             opencode_config["mcp"] = serde_json::Value::Object(mcp_map);
         }
@@ -447,6 +460,99 @@ pub async fn sync_jobs(
     Ok(())
 }
 
+pub async fn check_agent_mcp_readiness(
+    client: &kube::Client,
+    ns: &str,
+    agent_name: &str,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Ok(Some(cfg)) = get_agent_config(client, ns, agent_name).await {
+        if let Some(servers) = cfg.mcp_servers {
+            for s in servers {
+                if let Some(ref url) = s.url {
+                    // Vérifier si l'URL est interne au cluster (ex: .svc.cluster.local)
+                    if url.contains(".svc.cluster.local") {
+                        // Extraction du nom de service K8s si possible
+                        if let Some(host) = url.split("://").nth(1).and_then(|h| h.split(':').next()).and_then(|h| h.split('/').next()) {
+                            let parts: Vec<&str> = host.split('.').collect();
+                            if parts.len() >= 2 {
+                                let svc_name = parts[0];
+                                let svc_ns = parts[1];
+                                let svcs: Api<k8s_openapi::api::core::v1::Service> = Api::namespaced(client.clone(), svc_ns);
+                                if svcs.get(svc_name).await.is_err() {
+                                    warnings.push(format!("Serveur MCP `{}` configuré sur `{}` mais le Service K8s `{}/{}` est introuvable !", s.name, url, svc_ns, svc_name));
+                                }
+                            }
+                        }
+                    }
+                } else if s.command.as_deref() == Some("npx") {
+                    warnings.push(format!("MCP `{}` configuré avec `npx` (exécution locale), mais l'environnement conteneur ne dispose pas de node/npx. Une URL MCP distante K8s est requise.", s.name));
+                }
+            }
+        }
+    }
+    warnings
+}
+
+pub fn format_agent_output(raw_logs: &str) -> String {
+    // Si les logs contiennent les délimiteurs [AGENT_EXEC] ... [AGENT_COMPLETED]
+    let mut extracted = String::new();
+    let mut capturing = false;
+
+    for line in raw_logs.lines() {
+        if line.contains("[AGENT_EXEC]") {
+            capturing = true;
+            continue;
+        }
+        if line.contains("[AGENT_COMPLETED]") || line.contains("[PERF]") {
+            break;
+        }
+        if capturing {
+            // Filtrer les lignes de bruit internes si nécessaire
+            if !line.starts_with("================================================================================") {
+                extracted.push_str(line);
+                extracted.push('\n');
+            }
+        }
+    }
+
+    let clean = extracted.trim();
+    if !clean.is_empty() {
+        if clean.len() > 3000 {
+            format!("{}...\n_[Sortie tronquée à 3000 caractères]_", &clean[..2950])
+        } else {
+            clean.to_string()
+        }
+    } else {
+        // Fallback sur les dernières lignes des logs
+        let tail: Vec<&str> = raw_logs.lines().rev().take(30).collect();
+        let tail_rev: Vec<&str> = tail.into_iter().rev().collect();
+        tail_rev.join("\n")
+    }
+}
+
+pub async fn get_job_pod_logs(
+    client: &kube::Client,
+    ns: &str,
+    job_name: &str,
+) -> Result<String, kube::Error> {
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let lp = ListParams::default().labels(&format!("job-name={}", job_name));
+    let pod_list = pods.list(&lp).await?;
+
+    if let Some(pod) = pod_list.items.into_iter().next() {
+        if let Some(pod_name) = pod.metadata.name {
+            let log_params = LogParams {
+                container: Some("opencode-agent".to_string()),
+                tail_lines: Some(250),
+                ..Default::default()
+            };
+            return pods.logs(&pod_name, &log_params).await;
+        }
+    }
+    Ok(String::new())
+}
+
 /// Fallback to seed realistic default agents for local standalone mode or dashboard preview
 pub async fn seed_default_agents(metrics: &MetricsStore) {
     let reviewer_prompt = r#"# Agent « Code Reviewer »
@@ -494,6 +600,8 @@ Analyser les pull requests et le code source, vérifier le respect des bonnes pr
     let mail_mcp = vec![
         McpServerConfig {
             name: "gmail".to_string(),
+            server_type: Some("local".to_string()),
+            url: None,
             command: Some("npx".to_string()),
             args: vec![
                 "-y".to_string(),
@@ -501,9 +609,11 @@ Analyser les pull requests et le code source, vérifier le respect des bonnes pr
             ],
         },
         McpServerConfig {
-            name: "buzz-dev-mcp".to_string(),
-            command: Some("npx".to_string()),
-            args: vec!["-y".to_string(), "buzz-dev-mcp".to_string()],
+            name: "buzz".to_string(),
+            server_type: Some("remote".to_string()),
+            url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
+            command: None,
+            args: vec![],
         },
     ];
 

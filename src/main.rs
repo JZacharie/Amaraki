@@ -17,7 +17,7 @@ mod slack;
 mod web;
 
 use auth::{require_auth_middleware, AuthConfig};
-use gatekeeper::{GatekeeperStore, PendingValidation, UserValidationIntent};
+use gatekeeper::GatekeeperStore;
 use metrics::MetricsStore;
 use slack::SlackNotifier;
 use web::WebState;
@@ -340,7 +340,7 @@ async fn process_agent_request(
     event: SlackEventDetail,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let thread_id = event.thread_ts.clone().unwrap_or_else(|| event.ts.clone());
-    let session_key = GatekeeperStore::make_key(&event.channel, Some(&thread_id));
+    let _session_key = GatekeeperStore::make_key(&event.channel, Some(&thread_id));
 
     let mut instruction_text = event.text.clone().unwrap_or_default();
 
@@ -451,6 +451,23 @@ async fn process_agent_request(
             return Ok(());
         }
 
+        // Vérification de la disponibilité des MCP configurés pour cet agent
+        let mcp_warnings = k8s::check_agent_mcp_readiness(client, &state.namespace, &agent_name).await;
+        if !mcp_warnings.is_empty() {
+            let mut warn_text = format!(
+                "⚠️ *Chef Aramaki (Alerte Intégration MCP)* : Des dépendances d'outils sont incomplètes pour *{}* :\n",
+                agent_name
+            );
+            for w in &mcp_warnings {
+                warn_text.push_str(&format!("• {}\n", w));
+            }
+            warn_text.push_str("_Information remontée au Chef : une intégration de cluster est requise._");
+            state
+                .slack_notifier
+                .post_message(&event.channel, &warn_text, Some(&thread_id))
+                .await;
+        }
+
         match k8s::spawn_agent_job(
             client,
             &state.namespace,
@@ -472,6 +489,62 @@ async fn process_agent_request(
                     .slack_notifier
                     .post_message(&event.channel, &success_msg, Some(&thread_id))
                     .await;
+
+                // Suivi en arrière-plan de l'exécution et remontée du résultat dans le fil Slack
+                let client_clone = client.clone();
+                let ns_clone = state.namespace.clone();
+                let job_id_clone = job_id.clone();
+                let agent_name_clone = agent_name.clone();
+                let channel_clone = event.channel.clone();
+                let thread_id_clone = thread_id.clone();
+                let notifier_clone = state.slack_notifier.clone();
+
+                tokio::spawn(async move {
+                    let jobs_api: kube::Api<k8s_openapi::api::batch::v1::Job> = kube::Api::namespaced(client_clone.clone(), &ns_clone);
+                    let mut attempts = 0;
+                    let max_attempts = 120; // 4 minutes max (120 x 2s)
+
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        attempts += 1;
+
+                        if let Ok(job) = jobs_api.get(&job_id_clone).await {
+                            if let Some(status) = job.status {
+                                let succeeded = status.succeeded.unwrap_or(0);
+                                let failed = status.failed.unwrap_or(0);
+
+                                if succeeded > 0 || failed > 0 || attempts >= max_attempts {
+                                    // Récupération des logs du pod
+                                    let raw_logs = k8s::get_job_pod_logs(&client_clone, &ns_clone, &job_id_clone)
+                                        .await
+                                        .unwrap_or_default();
+                                    let formatted = k8s::format_agent_output(&raw_logs);
+
+                                    let icon = if succeeded > 0 { "🏁" } else { "⚠️" };
+                                    let status_label = if succeeded > 0 {
+                                        "Mission accomplie avec succès"
+                                    } else if failed > 0 {
+                                        "Mission terminée en échec"
+                                    } else {
+                                        "Délai d'attente dépassé (timeout)"
+                                    };
+
+                                    let final_msg = format!(
+                                        "{} *Chef Aramaki* : Compte-rendu de mission pour *{}* (Job: `{}`)\n*Statut* : {}\n\n```\n{}\n```",
+                                        icon, agent_name_clone, job_id_clone, status_label, formatted
+                                    );
+
+                                    notifier_clone
+                                        .post_message(&channel_clone, &final_msg, Some(&thread_id_clone))
+                                        .await;
+                                    break;
+                                }
+                            }
+                        } else if attempts >= 10 {
+                            break;
+                        }
+                    }
+                });
             }
             Err(e) => {
                 let err_msg = format!(
