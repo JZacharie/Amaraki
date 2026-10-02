@@ -228,6 +228,18 @@ pub async fn spawn_agent_job(
         &safe_agent_name
     };
 
+    let image_pull_secrets =
+        std::env::var("IMAGE_PULL_SECRETS").unwrap_or_else(|_| "regcred".to_string());
+    let pull_secrets_vec: Vec<serde_json::Value> = image_pull_secrets
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|name| json!({ "name": name }))
+        .collect();
+
+    let service_account_name =
+        std::env::var("AGENT_SERVICE_ACCOUNT").unwrap_or_else(|_| "aramaki-sa".to_string());
+
     let job_manifest: Job = serde_json::from_value(json!({
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -244,9 +256,22 @@ pub async fn spawn_agent_job(
             "template": {
                 "spec": {
                     "restartPolicy": "Never",
+                    "serviceAccountName": service_account_name,
+                    "imagePullSecrets": pull_secrets_vec,
+                    "securityContext": {
+                        "runAsNonRoot": true,
+                        "runAsUser": 1000,
+                        "runAsGroup": 1000,
+                        "fsGroup": 1000
+                    },
                     "containers": [{
                         "name": "opencode-agent",
                         "image": agent_runner_image,
+                        "securityContext": {
+                            "runAsNonRoot": true,
+                            "runAsUser": 1000,
+                            "allowPrivilegeEscalation": false
+                        },
                         "env": env_list,
                         "envFrom": env_from,
                         "volumeMounts": [{
