@@ -664,4 +664,38 @@ Tu disposes d'outils MCP pour interagir avec Gmail et Buzz :
             mail_env,
         )
         .await;
+
+    let leclerc_prompt = r#"# Agent « Leclerc Drive & Courses »
+
+# RÔLE
+Tu es l'assistant de Joseph ZACHARIE dédié à la gestion des courses et du panier Leclerc Drive.
+
+# MISSION
+1. Vérifier le statut actuel du panier Leclerc Drive à l'aide des outils MCP.
+2. Lister clairement les articles déjà présents, leurs quantités et le montant total estimé.
+3. Si Joseph demande d'ajouter, préparer ou valider des produits, exécuter les actions appropriées ou fournir la liste récapitulative claire avant validation.
+4. Rédiger une synthèse concise et claire destinée à être transmise directement dans le chat Slack."#;
+
+    let leclerc_mcp = vec![
+        McpServerConfig {
+            name: "leclerc-drive".to_string(),
+            server_type: Some("remote".to_string()),
+            url: Some("http://leclerc-drive-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
+            command: None,
+            args: vec![],
+        },
+    ];
+
+    metrics
+        .register_agent_full(
+            "opencode-leclerc",
+            "opencode/mimo-v2.5-free",
+            "Gestionnaire de panier et courses Leclerc Drive pour Joseph ZACHARIE",
+            vec!["leclerc-drive".to_string()],
+            Some(leclerc_prompt.to_string()),
+            Some(leclerc_mcp),
+            Some(5),
+            std::collections::HashMap::new(),
+        )
+        .await;
 }

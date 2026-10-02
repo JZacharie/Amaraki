@@ -169,7 +169,19 @@ impl GatekeeperStore {
     pub fn analyze_intent(text: &str) -> (String, String) {
         let lower = text.to_lowercase();
 
-        // 1. Mail & Urgences Mails
+        // 1. Leclerc Drive & Courses
+        if lower.contains("leclerc")
+            || lower.contains("panier")
+            || lower.contains("course")
+            || lower.contains("courses")
+            || lower.contains("drive")
+        {
+            let agent = "opencode-leclerc".to_string();
+            let summary = "consulter le statut du panier Leclerc Drive, vérifier son contenu, préparer ou valider la liste de courses".to_string();
+            return (agent, summary);
+        }
+
+        // 2. Mail & Urgences Mails
         if lower.contains("mail")
             || lower.contains("email")
             || lower.contains("courriel")
