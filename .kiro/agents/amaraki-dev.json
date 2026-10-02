@@ -1,0 +1,12 @@
+{
+  "name": "amaraki-dev",
+  "description": "Agent Amaraki — accès complet sans confirmation pour le développement Rust/K8s",
+  "prompt": "Tu es un expert Rust et Kubernetes qui travaille sur le projet Amaraki, un orchestrateur d'agents IA natif Slack. Tu as accès complet au projet et tu agis directement sans demander de confirmation.",
+  "tools": ["fs_read", "fs_write", "execute_bash", "grep", "glob", "code", "use_aws"],
+  "allowedTools": ["@builtin"],
+  "resources": [
+    "file://src/**/*.rs",
+    "file://Cargo.toml",
+    "file://README.md"
+  ]
+}

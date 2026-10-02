@@ -480,7 +480,8 @@ pub async fn check_agent_mcp_readiness(
                         if parts.len() >= 2 {
                             let svc_name = parts[0];
                             let svc_ns = parts[1];
-                            let svcs: Api<k8s_openapi::api::core::v1::Service> = Api::namespaced(client.clone(), svc_ns);
+                            let svcs: Api<k8s_openapi::api::core::v1::Service> =
+                                Api::namespaced(client.clone(), svc_ns);
                             if svcs.get(svc_name).await.is_err() {
                                 warnings.push(format!("Serveur MCP `{}` configuré sur `{}` mais le Service K8s `{}/{}` est introuvable !", s.name, url, svc_ns, svc_name));
                             }
@@ -551,7 +552,9 @@ pub fn format_agent_output(raw_logs: &str) -> String {
         }
         if capturing {
             // Filtrer les lignes de bruit internes si nécessaire
-            if !line.starts_with("================================================================================") {
+            if !line.starts_with(
+                "================================================================================",
+            ) {
                 extracted.push_str(line);
                 extracted.push('\n');
             }
@@ -561,7 +564,10 @@ pub fn format_agent_output(raw_logs: &str) -> String {
     let clean = extracted.trim();
     if !clean.is_empty() {
         if clean.len() > 3000 {
-            format!("{}...\n_[Sortie tronquée à 3000 caractères]_", &clean[..2950])
+            format!(
+                "{}...\n_[Sortie tronquée à 3000 caractères]_",
+                &clean[..2950]
+            )
         } else {
             clean.to_string()
         }
@@ -718,15 +724,13 @@ Tu es l'assistant de Joseph ZACHARIE dédié à la gestion des courses et du pan
 3. Si Joseph demande d'ajouter, préparer ou valider des produits, exécuter les actions appropriées ou fournir la liste récapitulative claire avant validation.
 4. Rédiger une synthèse concise et claire destinée à être transmise directement dans le chat Slack."#;
 
-    let leclerc_mcp = vec![
-        McpServerConfig {
-            name: "leclerc-drive".to_string(),
-            server_type: Some("remote".to_string()),
-            url: Some("http://leclerc-drive-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
-            command: None,
-            args: vec![],
-        },
-    ];
+    let leclerc_mcp = vec![McpServerConfig {
+        name: "leclerc-drive".to_string(),
+        server_type: Some("remote".to_string()),
+        url: Some("http://leclerc-drive-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
+        command: None,
+        args: vec![],
+    }];
 
     metrics
         .register_agent_full(

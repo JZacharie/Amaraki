@@ -437,7 +437,8 @@ async fn process_agent_request(
         .await;
 
     if let Some(ref client) = state.k8s_client {
-        let exists = k8s::check_agent_configmap_exists(client, &state.namespace, &agent_name).await?;
+        let exists =
+            k8s::check_agent_configmap_exists(client, &state.namespace, &agent_name).await?;
         if !exists {
             let err_msg = format!(
                 "⚠️ *Chef Aramaki* : Déploiement refusé. ConfigMap de l'agent `{}` introuvable dans le namespace `{}`.",
@@ -452,7 +453,8 @@ async fn process_agent_request(
         }
 
         // Vérification de la disponibilité des MCP configurés pour cet agent
-        let mcp_warnings = k8s::check_agent_mcp_readiness(client, &state.namespace, &agent_name).await;
+        let mcp_warnings =
+            k8s::check_agent_mcp_readiness(client, &state.namespace, &agent_name).await;
         if !mcp_warnings.is_empty() {
             let mut warn_text = format!(
                 "⚠️ *Chef Aramaki (Alerte Intégration MCP)* : Des dépendances d'outils sont incomplètes pour *{}* :\n",
@@ -461,7 +463,9 @@ async fn process_agent_request(
             for w in &mcp_warnings {
                 warn_text.push_str(&format!("• {}\n", w));
             }
-            warn_text.push_str("_Information remontée au Chef : une intégration de cluster est requise._");
+            warn_text.push_str(
+                "_Information remontée au Chef : une intégration de cluster est requise._",
+            );
             state
                 .slack_notifier
                 .post_message(&event.channel, &warn_text, Some(&thread_id))
@@ -500,7 +504,8 @@ async fn process_agent_request(
                 let notifier_clone = state.slack_notifier.clone();
 
                 tokio::spawn(async move {
-                    let jobs_api: kube::Api<k8s_openapi::api::batch::v1::Job> = kube::Api::namespaced(client_clone.clone(), &ns_clone);
+                    let jobs_api: kube::Api<k8s_openapi::api::batch::v1::Job> =
+                        kube::Api::namespaced(client_clone.clone(), &ns_clone);
                     let mut attempts = 0;
                     let max_attempts = 120; // 4 minutes max (120 x 2s)
 
@@ -515,12 +520,21 @@ async fn process_agent_request(
 
                                 if succeeded > 0 || failed > 0 || attempts >= max_attempts {
                                     // Récupération des logs du pod
-                                    let raw_logs = k8s::get_job_pod_logs(&client_clone, &ns_clone, &job_id_clone)
-                                        .await
-                                        .unwrap_or_default();
-                                    let analysis = k8s::analyze_agent_mission_result(&raw_logs, succeeded > 0);
+                                    let raw_logs = k8s::get_job_pod_logs(
+                                        &client_clone,
+                                        &ns_clone,
+                                        &job_id_clone,
+                                    )
+                                    .await
+                                    .unwrap_or_default();
+                                    let analysis =
+                                        k8s::analyze_agent_mission_result(&raw_logs, succeeded > 0);
 
-                                    let icon = if analysis.is_real_success { "🏁" } else { "⚠️" };
+                                    let icon = if analysis.is_real_success {
+                                        "🏁"
+                                    } else {
+                                        "⚠️"
+                                    };
 
                                     let final_msg = format!(
                                         "{} *Chef Aramaki* : Compte-rendu de mission pour *{}* (Job: `{}`)\n*Statut* : {}\n\n```\n{}\n```",
@@ -528,7 +542,11 @@ async fn process_agent_request(
                                     );
 
                                     notifier_clone
-                                        .post_message(&channel_clone, &final_msg, Some(&thread_id_clone))
+                                        .post_message(
+                                            &channel_clone,
+                                            &final_msg,
+                                            Some(&thread_id_clone),
+                                        )
                                         .await;
                                     break;
                                 }
@@ -552,7 +570,11 @@ async fn process_agent_request(
             }
         }
     } else {
-        let sim_id = format!("{}-sim-{}", agent_name, &uuid::Uuid::new_v4().to_string()[..8]);
+        let sim_id = format!(
+            "{}-sim-{}",
+            agent_name,
+            &uuid::Uuid::new_v4().to_string()[..8]
+        );
         let sim_msg = format!(
             "🤖 *Chef Aramaki* : [Mode autonome] Simulation de mission lancée pour `{}` (ID: `{}`).",
             agent_name, sim_id
