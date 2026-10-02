@@ -1,0 +1,36 @@
+# Rust / Cargo build artifacts
+/target/
+**/*.rs.bk
+
+# Local CI and test logs
+*.log
+local-ci.log
+.local-ci/
+/ci-logs/
+
+# Docker build temporary files and caches
+.docker/
+docker-build.log
+
+# Temporary and backup files
+*.tmp
+*.bak
+*~
+*.swp
+*.swo
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE & Editor artifacts
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
