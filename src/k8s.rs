@@ -566,31 +566,60 @@ pub async fn check_agent_mcp_readiness(
                             let svc_ns = parts[1];
                             let svcs: Api<k8s_openapi::api::core::v1::Service> =
                                 Api::namespaced(client.clone(), svc_ns);
-                            if svcs.get(svc_name).await.is_err() {
-                                warnings.push(format!(
-                                    "Serveur MCP `{}` (`{}`) : Service K8s `{}/{}` introuvable !",
-                                    s.name, url, svc_ns, svc_name
-                                ));
-                            } else {
-                                // Vérifier la présence d'endpoints prêts (pod sous-jacent actif)
-                                let eps: Api<k8s_openapi::api::core::v1::Endpoints> =
-                                    Api::namespaced(client.clone(), svc_ns);
-                                if let Ok(ep) = eps.get(svc_name).await {
-                                    let has_ready_subsets = ep
-                                        .subsets
-                                        .as_ref()
-                                        .map(|subsets| {
-                                            subsets.iter().any(|sub| {
-                                                sub.addresses
-                                                    .as_ref()
-                                                    .map(|addrs| !addrs.is_empty())
-                                                    .unwrap_or(false)
-                                            })
-                                        })
-                                        .unwrap_or(false);
-                                    if !has_ready_subsets {
-                                        warnings.push(format!("Serveur MCP `{}` (`{}`) : Aucun Pod actif/prêt derrière le Service `{}/{}` !", s.name, url, svc_ns, svc_name));
+                            match svcs.get(svc_name).await {
+                                Ok(_) => {
+                                    // Vérifier la présence d'endpoints prêts (pod sous-jacent actif)
+                                    let eps: Api<k8s_openapi::api::core::v1::Endpoints> =
+                                        Api::namespaced(client.clone(), svc_ns);
+                                    match eps.get(svc_name).await {
+                                        Ok(ep) => {
+                                            let has_ready_subsets = ep
+                                                .subsets
+                                                .as_ref()
+                                                .map(|subsets| {
+                                                    subsets.iter().any(|sub| {
+                                                        sub.addresses
+                                                            .as_ref()
+                                                            .map(|addrs| !addrs.is_empty())
+                                                            .unwrap_or(false)
+                                                    })
+                                                })
+                                                .unwrap_or(false);
+                                            if !has_ready_subsets {
+                                                warnings.push(format!("Serveur MCP `{}` (`{}`) : Aucun Pod actif/prêt derrière le Service `{}/{}` !", s.name, url, svc_ns, svc_name));
+                                            }
+                                        }
+                                        Err(kube::Error::Api(ref api_err)) if api_err.code == 403 || api_err.reason == "Forbidden" => {
+                                            tracing::warn!(
+                                                "[MCP-CHECK] Droits RBAC insuffisants pour inspecter les endpoints de `{}/{}` (HTTP 403)",
+                                                svc_ns, svc_name
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(
+                                                "[MCP-CHECK] Impossible de vérifier les endpoints de `{}/{}`: {:?}",
+                                                svc_ns, svc_name, e
+                                            );
+                                        }
                                     }
+                                }
+                                Err(kube::Error::Api(ref api_err)) if api_err.code == 404 || api_err.reason == "NotFound" => {
+                                    warnings.push(format!(
+                                        "Serveur MCP `{}` (`{}`) : Service K8s `{}/{}` introuvable !",
+                                        s.name, url, svc_ns, svc_name
+                                    ));
+                                }
+                                Err(kube::Error::Api(ref api_err)) if api_err.code == 403 || api_err.reason == "Forbidden" => {
+                                    tracing::warn!(
+                                        "[MCP-CHECK] Droits RBAC insuffisants pour vérifier le Service K8s `{}/{}` (HTTP 403 - ignoré pour ne pas bloquer)",
+                                        svc_ns, svc_name
+                                    );
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "[MCP-CHECK] Erreur lors de la vérification du Service K8s `{}/{}`: {:?} (non bloquant)",
+                                        svc_ns, svc_name, err
+                                    );
                                 }
                             }
                         }
