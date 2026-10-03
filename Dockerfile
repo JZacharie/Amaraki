@@ -26,15 +26,15 @@ COPY assets ./assets
 COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --bin aramaki
+    cargo build --release --bin amaraki
 
 # Stage 5: Lightweight runtime image
 FROM debian:trixie-slim AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/aramaki /usr/local/bin/aramaki
+COPY --from=builder /app/target/release/amaraki /usr/local/bin/amaraki
 
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
-CMD ["/usr/local/bin/aramaki"]
+CMD ["/usr/local/bin/amaraki"]

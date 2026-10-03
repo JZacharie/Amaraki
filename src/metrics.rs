@@ -491,106 +491,106 @@ impl MetricsStore {
         let mut out = String::with_capacity(4096);
         let summary = self.get_dashboard_summary(namespace).await;
 
-        out.push_str("# HELP aramaki_connected Indicates if Aramaki is connected to Kubernetes and operational (1 = connected, 0 = disconnected)\n");
-        out.push_str("# TYPE aramaki_connected gauge\n");
+        out.push_str("# HELP amaraki_connected Indicates if Amaraki is connected to Kubernetes and operational (1 = connected, 0 = disconnected)\n");
+        out.push_str("# TYPE amaraki_connected gauge\n");
         out.push_str(&format!(
-            "aramaki_connected{{service=\"aramaki\",namespace=\"{}\"}} {}\n\n",
+            "amaraki_connected{{service=\"amaraki\",namespace=\"{}\"}} {}\n\n",
             namespace,
             if summary.status.k8s_connected { 1 } else { 0 }
         ));
 
-        out.push_str("# HELP aramaki_uptime_seconds Process uptime in seconds\n");
-        out.push_str("# TYPE aramaki_uptime_seconds gauge\n");
+        out.push_str("# HELP amaraki_uptime_seconds Process uptime in seconds\n");
+        out.push_str("# TYPE amaraki_uptime_seconds gauge\n");
         out.push_str(&format!(
-            "aramaki_uptime_seconds {}\n\n",
+            "amaraki_uptime_seconds {}\n\n",
             summary.uptime_seconds
         ));
 
-        out.push_str("# HELP aramaki_requests_total Total number of incoming requests received\n");
-        out.push_str("# TYPE aramaki_requests_total counter\n");
+        out.push_str("# HELP amaraki_requests_total Total number of incoming requests received\n");
+        out.push_str("# TYPE amaraki_requests_total counter\n");
         out.push_str(&format!(
-            "aramaki_requests_total{{status=\"success\"}} {}\n",
+            "amaraki_requests_total{{status=\"success\"}} {}\n",
             summary.requests_success
         ));
         out.push_str(&format!(
-            "aramaki_requests_total{{status=\"failed\"}} {}\n\n",
+            "amaraki_requests_total{{status=\"failed\"}} {}\n\n",
             summary.requests_failed
         ));
 
-        out.push_str("# HELP aramaki_agents_spawned_total Total number of agent jobs spawned\n");
-        out.push_str("# TYPE aramaki_agents_spawned_total counter\n");
+        out.push_str("# HELP amaraki_agents_spawned_total Total number of agent jobs spawned\n");
+        out.push_str("# TYPE amaraki_agents_spawned_total counter\n");
         for agent in &summary.agents {
             out.push_str(&format!(
-                "aramaki_agents_spawned_total{{agent=\"{}\",model=\"{}\"}} {}\n",
+                "amaraki_agents_spawned_total{{agent=\"{}\",model=\"{}\"}} {}\n",
                 agent.name, agent.model, agent.total_runs
             ));
         }
         out.push('\n');
 
-        out.push_str("# HELP aramaki_agent_executions_total Agent job executions by status\n");
-        out.push_str("# TYPE aramaki_agent_executions_total counter\n");
+        out.push_str("# HELP amaraki_agent_executions_total Agent job executions by status\n");
+        out.push_str("# TYPE amaraki_agent_executions_total counter\n");
         for agent in &summary.agents {
             out.push_str(&format!(
-                "aramaki_agent_executions_total{{agent=\"{}\",model=\"{}\",status=\"succeeded\"}} {}\n",
+                "amaraki_agent_executions_total{{agent=\"{}\",model=\"{}\",status=\"succeeded\"}} {}\n",
                 agent.name, agent.model, agent.success_count
             ));
             out.push_str(&format!(
-                "aramaki_agent_executions_total{{agent=\"{}\",model=\"{}\",status=\"failed\"}} {}\n",
+                "amaraki_agent_executions_total{{agent=\"{}\",model=\"{}\",status=\"failed\"}} {}\n",
                 agent.name, agent.model, agent.failure_count
             ));
             out.push_str(&format!(
-                "aramaki_agent_executions_total{{agent=\"{}\",model=\"{}\",status=\"running\"}} {}\n",
+                "amaraki_agent_executions_total{{agent=\"{}\",model=\"{}\",status=\"running\"}} {}\n",
                 agent.name, agent.model, agent.running_count
             ));
         }
         out.push('\n');
 
-        out.push_str("# HELP aramaki_agent_duration_seconds Average duration of agent executions in seconds\n");
-        out.push_str("# TYPE aramaki_agent_duration_seconds gauge\n");
+        out.push_str("# HELP amaraki_agent_duration_seconds Average duration of agent executions in seconds\n");
+        out.push_str("# TYPE amaraki_agent_duration_seconds gauge\n");
         for agent in &summary.agents {
             out.push_str(&format!(
-                "aramaki_agent_duration_seconds{{agent=\"{}\"}} {:.3}\n",
+                "amaraki_agent_duration_seconds{{agent=\"{}\"}} {:.3}\n",
                 agent.name,
                 agent.average_duration_secs()
             ));
         }
         out.push('\n');
 
-        out.push_str("# HELP aramaki_models_consumed_total Total times a model has been invoked\n");
-        out.push_str("# TYPE aramaki_models_consumed_total counter\n");
+        out.push_str("# HELP amaraki_models_consumed_total Total times a model has been invoked\n");
+        out.push_str("# TYPE amaraki_models_consumed_total counter\n");
         for model in &summary.models {
             out.push_str(&format!(
-                "aramaki_models_consumed_total{{model=\"{}\"}} {}\n",
+                "amaraki_models_consumed_total{{model=\"{}\"}} {}\n",
                 model.model, model.invocations
             ));
             out.push_str(&format!(
-                "aramaki_model_success_total{{model=\"{}\"}} {}\n",
+                "amaraki_model_success_total{{model=\"{}\"}} {}\n",
                 model.model, model.success_count
             ));
             out.push_str(&format!(
-                "aramaki_model_failure_total{{model=\"{}\"}} {}\n",
+                "amaraki_model_failure_total{{model=\"{}\"}} {}\n",
                 model.model, model.failure_count
             ));
         }
         out.push('\n');
 
-        out.push_str("# HELP aramaki_tools_exposed Number of MCP tools exposed to an agent\n");
-        out.push_str("# TYPE aramaki_tools_exposed gauge\n");
+        out.push_str("# HELP amaraki_tools_exposed Number of MCP tools exposed to an agent\n");
+        out.push_str("# TYPE amaraki_tools_exposed gauge\n");
         for agent in &summary.agents {
             for tool in &agent.tools_exposed {
                 out.push_str(&format!(
-                    "aramaki_tools_exposed{{agent=\"{}\",tool=\"{}\"}} 1\n",
+                    "amaraki_tools_exposed{{agent=\"{}\",tool=\"{}\"}} 1\n",
                     agent.name, tool
                 ));
             }
         }
         out.push('\n');
 
-        out.push_str("# HELP aramaki_tool_calls_total Total tool calls/invocations recorded\n");
-        out.push_str("# TYPE aramaki_tool_calls_total counter\n");
+        out.push_str("# HELP amaraki_tool_calls_total Total tool calls/invocations recorded\n");
+        out.push_str("# TYPE amaraki_tool_calls_total counter\n");
         for tool in &summary.tools {
             out.push_str(&format!(
-                "aramaki_tool_calls_total{{tool=\"{}\"}} {}\n",
+                "amaraki_tool_calls_total{{tool=\"{}\"}} {}\n",
                 tool.tool_name, tool.invocations
             ));
         }
@@ -607,15 +607,15 @@ impl MetricsStore {
 
         // 1. Connection gauge
         metrics_list.push(serde_json::json!({
-            "name": "aramaki.connected",
-            "description": "Indicates if Aramaki is connected to Kubernetes and operational",
+            "name": "amaraki.connected",
+            "description": "Indicates if Amaraki is connected to Kubernetes and operational",
             "unit": "1",
             "gauge": {
                 "dataPoints": [{
                     "timeUnixNano": now_unix_nano.to_string(),
                     "asInt": if summary.status.k8s_connected { 1 } else { 0 },
                     "attributes": [
-                        { "key": "service", "value": { "stringValue": "aramaki" } },
+                        { "key": "service", "value": { "stringValue": "amaraki" } },
                         { "key": "namespace", "value": { "stringValue": namespace } }
                     ]
                 }]
@@ -624,7 +624,7 @@ impl MetricsStore {
 
         // 2. Requests counter
         metrics_list.push(serde_json::json!({
-            "name": "aramaki.requests.total",
+            "name": "amaraki.requests.total",
             "description": "Total number of incoming requests received",
             "unit": "1",
             "sum": {
@@ -669,7 +669,7 @@ impl MetricsStore {
         }
 
         metrics_list.push(serde_json::json!({
-            "name": "aramaki.agent.executions",
+            "name": "amaraki.agent.executions",
             "description": "Agent job executions outcome",
             "unit": "1",
             "sum": {
@@ -692,7 +692,7 @@ impl MetricsStore {
         }
 
         metrics_list.push(serde_json::json!({
-            "name": "aramaki.models.consumed",
+            "name": "amaraki.models.consumed",
             "description": "Total times an AI model has been consumed",
             "unit": "1",
             "sum": {
@@ -706,14 +706,14 @@ impl MetricsStore {
             "resourceMetrics": [{
                 "resource": {
                     "attributes": [
-                        { "key": "service.name", "value": { "stringValue": "aramaki" } },
+                        { "key": "service.name", "value": { "stringValue": "amaraki" } },
                         { "key": "service.version", "value": { "stringValue": "0.1.0" } },
                         { "key": "k8s.namespace.name", "value": { "stringValue": namespace } }
                     ]
                 },
                 "scopeMetrics": [{
                     "scope": {
-                        "name": "aramaki.orchestrator",
+                        "name": "amaraki.orchestrator",
                         "version": "0.1.0"
                     },
                     "metrics": metrics_list
@@ -760,7 +760,7 @@ mod tests {
             .await;
         store.record_tool_invocation("git").await;
 
-        let summary = store.get_dashboard_summary("aramaki").await;
+        let summary = store.get_dashboard_summary("amaraki").await;
         assert_eq!(summary.requests_total, 2);
         assert_eq!(summary.requests_success, 1);
         assert_eq!(summary.requests_failed, 1);
@@ -772,18 +772,18 @@ mod tests {
         assert_eq!(summary.agents[0].tools_exposed, vec!["filesystem", "git"]);
 
         // Verify Prometheus output
-        let prom = store.to_prometheus_text("aramaki").await;
-        assert!(prom.contains("aramaki_connected{service=\"aramaki\",namespace=\"aramaki\"} 1"));
-        assert!(prom.contains("aramaki_requests_total{status=\"success\"} 1"));
-        assert!(prom.contains("aramaki_agents_spawned_total{agent=\"agent-code-reviewer\",model=\"opencode/free-default-model\"} 1"));
+        let prom = store.to_prometheus_text("amaraki").await;
+        assert!(prom.contains("amaraki_connected{service=\"amaraki\",namespace=\"amaraki\"} 1"));
+        assert!(prom.contains("amaraki_requests_total{status=\"success\"} 1"));
+        assert!(prom.contains("amaraki_agents_spawned_total{agent=\"agent-code-reviewer\",model=\"opencode/free-default-model\"} 1"));
         assert!(prom.contains(
-            "aramaki_tools_exposed{agent=\"agent-code-reviewer\",tool=\"filesystem\"} 1"
+            "amaraki_tools_exposed{agent=\"agent-code-reviewer\",tool=\"filesystem\"} 1"
         ));
-        assert!(prom.contains("aramaki_tool_calls_total{tool=\"git\"} 1"));
+        assert!(prom.contains("amaraki_tool_calls_total{tool=\"git\"} 1"));
 
         // Verify OpenTelemetry JSON output
-        let otel = store.to_opentelemetry_json("aramaki").await;
-        assert!(otel.to_string().contains("aramaki.orchestrator"));
-        assert!(otel.to_string().contains("aramaki.agent.executions"));
+        let otel = store.to_opentelemetry_json("amaraki").await;
+        assert!(otel.to_string().contains("amaraki.orchestrator"));
+        assert!(otel.to_string().contains("amaraki.agent.executions"));
     }
 }

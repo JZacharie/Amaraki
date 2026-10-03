@@ -133,7 +133,7 @@ pub async fn prometheus_metrics_handler(
                 .into_response();
             resp.headers_mut().insert(
                 header::WWW_AUTHENTICATE,
-                header::HeaderValue::from_static("Basic realm=\"Aramaki Metrics\""),
+                header::HeaderValue::from_static("Basic realm=\"Amaraki Metrics\""),
             );
             return resp;
         }
@@ -265,7 +265,7 @@ pub async fn logout_handler(
     }
     // Also clear legacy cookie if present
     if let Ok(legacy_clear) =
-        header::HeaderValue::from_str("aramaki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+        header::HeaderValue::from_str("amaraki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
     {
         response
             .headers_mut()
@@ -453,7 +453,7 @@ pub async fn test_trigger_handler(
     }
 }
 
-// Endpoint to post a custom message directly to Slack channel as Chef Aramaki
+// Endpoint to post a custom message directly to Slack channel as Chef Amaraki
 pub async fn slack_send_handler(
     State(state): State<Arc<WebState>>,
     Json(payload): Json<SendSlackMessagePayload>,

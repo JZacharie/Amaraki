@@ -11,7 +11,7 @@ NC='\033[0m' # Pas de couleur
 
 START_TIME=$(date +%s)
 
-echo -e "${BLUE}=== [Aramaki] Pipeline CI Ultra-Rapide (Host & Docker BuildKit) ===${NC}"
+echo -e "${BLUE}=== [Amaraki] Pipeline CI Ultra-Rapide (Host & Docker BuildKit) ===${NC}"
 
 # Variables de performance
 export DOCKER_BUILDKIT=1

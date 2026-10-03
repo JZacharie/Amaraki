@@ -126,7 +126,7 @@ pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
             for cookie in cookie_str.split(';') {
                 let parts: Vec<&str> = cookie.trim().splitn(2, '=').collect();
                 if parts.len() == 2
-                    && (parts[0] == "amaraki_session" || parts[0] == "aramaki_session")
+                    && (parts[0] == "amaraki_session" || parts[0] == "amaraki_session")
                 {
                     return Some(parts[1].to_string());
                 }
@@ -283,7 +283,7 @@ pub async fn require_auth_middleware(
             .into_response();
         resp.headers_mut().insert(
             header::WWW_AUTHENTICATE,
-            header::HeaderValue::from_static("Basic realm=\"Aramaki Dashboard\""),
+            header::HeaderValue::from_static("Basic realm=\"Amaraki Dashboard\""),
         );
         resp
     } else {
@@ -325,7 +325,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            "other=123; aramaki_session=test-uuid-456; foo=bar"
+            "other=123; amaraki_session=test-uuid-456; foo=bar"
                 .parse()
                 .unwrap(),
         );

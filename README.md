@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/logo.png" alt="Amaraki Logo" width="200"/>
 
-  # Amaraki
+# Amaraki
 
   **Chief Section 9 — Agent Orchestrator & Dynamic K8s Job Provisioner for Slack**
 
@@ -24,7 +24,7 @@
 
 **Amaraki** is a Slack-native AI agent orchestrator written in Rust. Named after the chief of Section 9 in *Ghost in the Shell*, it acts as a command bridge between Slack conversations and Kubernetes-powered AI agents.
 
-When a user mentions `@amaraki` (or `@aramaki`) or sends a message in an active thread, Amaraki:
+When a user mentions `@amaraki` (or `@amaraki`) or sends a message in an active thread, Amaraki:
 
 1. **Understands** the intent (email summary, code review, K8s diagnosis, incident response…)
 2. **Confirms** the action with the user before executing
@@ -48,7 +48,7 @@ Slack ──► /slack/events ──► Gatekeeper ──► K8s Job (AI Agent)
 Key components:
 
 | Module | Role |
-|--------|------|
+| -------- | ------ |
 | `main.rs` | HTTP server (Axum), routing, background K8s sync loop |
 | `gatekeeper.rs` | Intent detection, validation state machine, Whisper transcription |
 | `k8s.rs` | Agent discovery (ConfigMaps), Job spawning, status sync |
@@ -113,7 +113,7 @@ Runs `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, and op
 ### Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| ---------- | --------- | ------------- |
 | `PORT` / `AMARAKI_PORT` | `3000` | HTTP listen port (legacy `ARAMAKI_PORT` supported) |
 | `AMARAKI_HOST` | `0.0.0.0` | HTTP listen host (legacy `ARAMAKI_HOST` supported) |
 | `POD_NAMESPACE` | `amaraki` | Kubernetes namespace |
@@ -138,8 +138,9 @@ Runs `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, and op
 5. Set `SLACK_BOT_TOKEN` with the `xoxb-…` token
 
 **Trigger conditions:**
-- Bot is mentioned (`@amaraki` or `@aramaki`)
-- Message contains `amaraki` or `aramaki` (case-insensitive)
+
+- Bot is mentioned (`@amaraki` or `@amaraki`)
+- Message contains `amaraki` or `amaraki` (case-insensitive)
 - Message is in an active validation thread
 - Message contains an audio or video file (automatic Whisper transcription)
 - Message from Joe in the `#ai` Slack channel (automatic agent instruction routing)
@@ -180,7 +181,7 @@ At startup, Amaraki discovers all ConfigMaps in the namespace and registers the 
 ### API Endpoints
 
 | Method | Path | Auth | Description |
-|--------|------|------|-------------|
+| -------- | ------ | ------ | ------------- |
 | `GET` | `/health` | None | Health check |
 | `GET` | `/metrics` | None* | Prometheus metrics |
 | `GET` | `/api/otel/v1/metrics` | None* | OpenTelemetry metrics |
@@ -222,7 +223,7 @@ docker run -p 3000:3000 \
 
 **Amaraki** est un orchestrateur d'agents IA natif Slack, écrit en Rust. Nommé d'après le chef de la Section 9 dans *Ghost in the Shell*, il joue le rôle de pont de commandement entre les conversations Slack et les agents IA hébergés sur Kubernetes.
 
-Lorsqu'un utilisateur mentionne `@amaraki` (ou `@aramaki`) ou envoie un message dans un fil actif, Amaraki :
+Lorsqu'un utilisateur mentionne `@amaraki` (ou `@amaraki`) ou envoie un message dans un fil actif, Amaraki :
 
 1. **Comprend** l'intention (synthèse d'e-mails, revue de code, diagnostic K8s, réponse à incident…)
 2. **Confirme** l'action avec l'utilisateur avant toute exécution
@@ -246,7 +247,7 @@ Slack ──► /slack/events ──► Gatekeeper ──► Job K8s (Agent IA)
 Composants principaux :
 
 | Module | Rôle |
-|--------|------|
+| -------- | ------ |
 | `main.rs` | Serveur HTTP (Axum), routage, boucle de synchronisation K8s en arrière-plan |
 | `gatekeeper.rs` | Détection d'intention, machine d'état de validation, transcription Whisper |
 | `k8s.rs` | Découverte des agents (ConfigMaps), création de Jobs, synchronisation des statuts |
@@ -311,7 +312,7 @@ Exécute `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, et
 ### Variables d'environnement
 
 | Variable | Défaut | Description |
-|----------|--------|-------------|
+| ---------- | -------- | ------------- |
 | `PORT` / `AMARAKI_PORT` | `3000` | Port d'écoute HTTP (rétrocompatibilité `ARAMAKI_PORT`) |
 | `AMARAKI_HOST` | `0.0.0.0` | Hôte d'écoute HTTP (rétrocompatibilité `ARAMAKI_HOST`) |
 | `POD_NAMESPACE` | `amaraki` | Namespace Kubernetes |
@@ -336,8 +337,9 @@ Exécute `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, et
 5. Définissez `SLACK_BOT_TOKEN` avec le token `xoxb-…`
 
 **Conditions de déclenchement :**
-- Le bot est mentionné (`@amaraki` ou `@aramaki`)
-- Le message contient `amaraki` ou `aramaki` (insensible à la casse)
+
+- Le bot est mentionné (`@amaraki` ou `@amaraki`)
+- Le message contient `amaraki` ou `amaraki` (insensible à la casse)
 - Le message est dans un fil de validation actif
 - Le message contient un fichier audio ou vidéo (transcription automatique Whisper)
 - Message de Joe sur le canal `#ai` (pilotage automatique des instructions aux agents)
@@ -378,7 +380,7 @@ Au démarrage, Amaraki découvre tous les ConfigMaps du namespace et enregistre 
 ### Endpoints API
 
 | Méthode | Chemin | Auth | Description |
-|---------|--------|------|-------------|
+| --------- | -------- | ------ | ------------- |
 | `GET` | `/health` | Aucune | Vérification de l'état du service |
 | `GET` | `/metrics` | Aucune* | Métriques Prometheus |
 | `GET` | `/api/otel/v1/metrics` | Aucune* | Métriques OpenTelemetry |

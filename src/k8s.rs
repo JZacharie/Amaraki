@@ -492,7 +492,7 @@ pub async fn sync_jobs(
     metrics: &MetricsStore,
 ) -> Result<(), kube::Error> {
     let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
-    let lp = ListParams::default().labels("app.kubernetes.io/managed-by=aramaki");
+    let lp = ListParams::default().labels("app.kubernetes.io/managed-by=amaraki");
 
     let job_list = match jobs.list(&lp).await {
         Ok(list) => {
@@ -714,7 +714,7 @@ pub async fn seed_default_agents(metrics: &MetricsStore) {
     let reviewer_prompt = r#"# Agent « Code Reviewer »
 
 # RÔLE
-Tu es un agent expert sous la supervision du Chef Aramaki (Section 9) pour le cluster Kubernetes Jo3.
+Tu es un agent expert sous la supervision du Chef Amaraki (Section 9) pour le cluster Kubernetes Jo3.
 
 # MISSION
 Analyser les pull requests et le code source, vérifier le respect des bonnes pratiques et de la sécurité (secrets, permissions RBAC, non-root, limites mémoire et CPU), et formuler des revues de code claires, synthétiques et actionnables."#;

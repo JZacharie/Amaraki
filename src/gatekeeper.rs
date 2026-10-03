@@ -129,7 +129,7 @@ impl GatekeeperStore {
 
         // Condition 1b: Contains direct mention or keyword @amaraki / amaraki
         let lower = text.to_lowercase();
-        if lower.contains("amaraki") || lower.contains("aramaki") {
+        if lower.contains("amaraki") || lower.contains("amaraki") {
             return true;
         }
 

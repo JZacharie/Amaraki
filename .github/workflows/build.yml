@@ -1,4 +1,4 @@
-name: Aramaki Build & Push
+name: Amaraki Build & Push
 
 on:
   push:

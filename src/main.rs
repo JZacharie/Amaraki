@@ -71,13 +71,13 @@ pub struct SlackFileDetail {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info,aramaki=info".into());
+        .unwrap_or_else(|_| "info,amaraki=info".into());
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
         .init();
 
-    info!("=== Démarrage d'Aramaki (Chief Section 9 Agent Orchestrator & Observability) ===");
+    info!("=== Démarrage d'Amaraki (Chief Section 9 Agent Orchestrator & Observability) ===");
 
     let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "amaraki".to_string());
     let agent_runner_image = std::env::var("AGENT_RUNNER_IMAGE")
@@ -183,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Routes publiques & endpoints d'ingestion/métriques
     let public_routes = Router::new()
-        .route("/health", get(|| async { "OK - Aramaki active" }))
+        .route("/health", get(|| async { "OK - Amaraki active" }))
         .route("/logo.png", get(web::logo_handler))
         .route("/favicon.ico", get(web::logo_handler))
         .route("/login", get(web::login_html_handler))
@@ -436,12 +436,12 @@ async fn process_agent_request(
     let is_joe = state.slack_notifier.is_joe_user(user_str).await;
     let launch_msg = if is_joe {
         format!(
-            "🚀 *Chef Aramaki (Section 9)* : Instruction reçue de Joe pour *{}* (action: _{}_).\nLancement direct de la mission...",
+            "🚀 *Chef Amaraki (Section 9)* : Instruction reçue de Joe pour *{}* (action: _{}_).\nLancement direct de la mission...",
             agent_name, action_summary
         )
     } else {
         format!(
-            "🚀 *Chef Aramaki (Section 9)* : Requête reçue pour *{}* (action: _{}_).\nLancement direct de la mission...",
+            "🚀 *Chef Amaraki (Section 9)* : Requête reçue pour *{}* (action: _{}_).\nLancement direct de la mission...",
             agent_name, action_summary
         )
     };
@@ -455,7 +455,7 @@ async fn process_agent_request(
             k8s::check_agent_configmap_exists(client, &state.namespace, &agent_name).await?;
         if !exists {
             let err_msg = format!(
-                "⚠️ *Chef Aramaki* : Déploiement refusé. ConfigMap de l'agent `{}` introuvable dans le namespace `{}`.",
+                "⚠️ *Chef Amaraki* : Déploiement refusé. ConfigMap de l'agent `{}` introuvable dans le namespace `{}`.",
                 agent_name, state.namespace
             );
             state
@@ -471,13 +471,13 @@ async fn process_agent_request(
             k8s::check_agent_mcp_readiness(client, &state.namespace, &agent_name).await;
         if !mcp_warnings.is_empty() {
             let mut warn_text = format!(
-                "🛑 *Chef Aramaki (Lancement Refusé - Prérequis MCP Indisponibles)* :\nL'agent *{}* est temporairement *désactivé* car ses serveurs d'outils (MCP) ne sont pas opérationnels dans le cluster :\n",
+                "🛑 *Chef Amaraki (Lancement Refusé - Prérequis MCP Indisponibles)* :\nL'agent *{}* est temporairement *désactivé* car ses serveurs d'outils (MCP) ne sont pas opérationnels dans le cluster :\n",
                 agent_name
             );
             for w in &mcp_warnings {
                 warn_text.push_str(&format!("• {}\n", w));
             }
-            warn_text.push_str("\n_Rapport Chef Aramaki : La mission ne peut pas être exécutée sans ces outils. Veuillez vérifier le déploiement ou l'intégration des services MCP requis._");
+            warn_text.push_str("\n_Rapport Chef Amaraki : La mission ne peut pas être exécutée sans ces outils. Veuillez vérifier le déploiement ou l'intégration des services MCP requis._");
             state
                 .slack_notifier
                 .post_message(&event.channel, &warn_text, Some(&thread_id))
@@ -551,7 +551,7 @@ async fn process_agent_request(
                                     };
 
                                     let final_msg = format!(
-                                        "{} *Chef Aramaki* : Compte-rendu de mission pour *{}* (Job: `{}`)\n*Statut* : {}\n\n```\n{}\n```",
+                                        "{} *Chef Amaraki* : Compte-rendu de mission pour *{}* (Job: `{}`)\n*Statut* : {}\n\n```\n{}\n```",
                                         icon, agent_name_clone, job_id_clone, analysis.summary_note, analysis.formatted_output
                                     );
 
@@ -590,7 +590,7 @@ async fn process_agent_request(
             &uuid::Uuid::new_v4().to_string()[..8]
         );
         let sim_msg = format!(
-            "🤖 *Chef Aramaki* : [Mode autonome] Simulation de mission lancée pour `{}` (ID: `{}`).",
+            "🤖 *Chef Amaraki* : [Mode autonome] Simulation de mission lancée pour `{}` (ID: `{}`).",
             agent_name, sim_id
         );
         state

@@ -1,8 +1,8 @@
 [package]
-name = "aramaki"
+name = "amaraki"
 version = "0.1.0"
 edition = "2021"
-description = "Aramaki - Chief Section 9 Agent Orchestrator & Dynamic K8s Job Provisioner for Slack"
+description = "Amaraki - Chief Section 9 Agent Orchestrator & Dynamic K8s Job Provisioner for Slack"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
