@@ -136,7 +136,8 @@ Runs `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, and op
 - Bot is mentioned (`app_mention` event)
 - Message contains `amaraki` or `aramaki` (case-insensitive)
 - Message is in an active validation thread
-- Message contains an audio or video file
+- Message contains an audio or video file (automatic Whisper transcription)
+- Message from Joe in the `#ai` Slack channel (automatic agent instruction routing)
 
 ---
 
@@ -328,7 +329,8 @@ Exécute `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, et
 - Le bot est mentionné (événement `app_mention`)
 - Le message contient `amaraki` ou `aramaki` (insensible à la casse)
 - Le message est dans un fil de validation actif
-- Le message contient un fichier audio ou vidéo
+- Le message contient un fichier audio ou vidéo (transcription automatique Whisper)
+- Message de Joe sur le canal `#ai` (pilotage automatique des instructions aux agents)
 
 ---
 

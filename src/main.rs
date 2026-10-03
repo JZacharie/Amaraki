@@ -293,8 +293,10 @@ async fn handle_slack_event(
                 &event.r#type,
                 &text_content,
                 &event.channel,
+                user_id,
                 event.thread_ts.as_deref(),
                 has_audio_video,
+                Some(&state.slack_notifier),
             )
             .await;
 
@@ -427,10 +429,19 @@ async fn process_agent_request(
     // 2. Déclenchement direct et immédiat de l'agent (sans demande de validation Oui/Non)
     let (agent_name, action_summary) = GatekeeperStore::analyze_intent(&instruction_text);
 
-    let launch_msg = format!(
-        "🚀 *Chef Aramaki (Section 9)* : Requête reçue pour *{}* (action: _{}_).\nLancement direct de la mission...",
-        agent_name, action_summary
-    );
+    let user_str = event.user.as_deref().unwrap_or("inconnu");
+    let is_joe = state.slack_notifier.is_joe_user(user_str).await;
+    let launch_msg = if is_joe {
+        format!(
+            "🚀 *Chef Aramaki (Section 9)* : Instruction reçue de Joe pour *{}* (action: _{}_).\nLancement direct de la mission...",
+            agent_name, action_summary
+        )
+    } else {
+        format!(
+            "🚀 *Chef Aramaki (Section 9)* : Requête reçue pour *{}* (action: _{}_).\nLancement direct de la mission...",
+            agent_name, action_summary
+        )
+    };
     state
         .slack_notifier
         .post_message(&event.channel, &launch_msg, Some(&thread_id))
