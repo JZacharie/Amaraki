@@ -252,6 +252,7 @@ pub async fn spawn_agent_job(
         json!({ "name": "SLACK_CHANNEL", "value": channel }),
         json!({ "name": "SLACK_THREAD_TS", "value": thread_ts }),
         json!({ "name": "AGENT_CONFIG_PATH", "value": "/etc/agent/agent.json" }),
+        json!({ "name": "AMARAKI_JOB_ID", "value": job_id }),
         json!({ "name": "ARAMAKI_JOB_ID", "value": job_id }),
         json!({ "name": "MAX_AGENT_ITERATIONS", "value": max_iterations.to_string() }),
         json!({ "name": "PREVENT_AGENT_RECURSION", "value": "true" }),
@@ -349,7 +350,7 @@ pub async fn spawn_agent_job(
         .collect();
 
     let service_account_name =
-        std::env::var("AGENT_SERVICE_ACCOUNT").unwrap_or_else(|_| "aramaki-sa".to_string());
+        std::env::var("AGENT_SERVICE_ACCOUNT").unwrap_or_else(|_| "amaraki-sa".to_string());
 
     let job_manifest: Job = serde_json::from_value(json!({
         "apiVersion": "batch/v1",
@@ -358,7 +359,7 @@ pub async fn spawn_agent_job(
             "name": job_id,
             "namespace": ns,
             "labels": {
-                "app.kubernetes.io/managed-by": "aramaki",
+                "app.kubernetes.io/managed-by": "amaraki",
                 "agent-name": safe_agent_name
             }
         },
@@ -385,7 +386,7 @@ TS_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 SEC_START=$(date +%s)
 echo "================================================================================"
 echo "[$TS_START] [AGENT_INIT] 🚀 Démarrage de l'agent Section 9"
-echo "[$TS_START] [AGENT_META] name=\"${AGENT_NAME:-unknown}\" | model=\"${AGENT_MODEL:-unknown}\" | job_id=\"${ARAMAKI_JOB_ID:-unknown}\""
+echo "[$TS_START] [AGENT_META] name=\"${AGENT_NAME:-unknown}\" | model=\"${AGENT_MODEL:-unknown}\" | job_id=\"${AMARAKI_JOB_ID:-${ARAMAKI_JOB_ID:-unknown}}\""
 echo "[$TS_START] [INPUT_PROMPT] \"${USER_PROMPT}\""
 echo "[$TS_START] [SLACK_CONTEXT] channel=\"${SLACK_CHANNEL:-none}\" | thread_ts=\"${SLACK_THREAD_TS:-none}\""
 echo "[$TS_START] [ENV_AUDIT] Variables d'environnement déclarées (secrets masqués) :"

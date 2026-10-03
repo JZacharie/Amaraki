@@ -44,17 +44,23 @@ pub struct LoginResponse {
 
 impl AuthConfig {
     pub fn from_env() -> Self {
-        let username = std::env::var("ARAMAKI_AUTH_USER").unwrap_or_else(|_| "admin".to_string());
-        let password =
-            std::env::var("ARAMAKI_AUTH_PASSWORD").unwrap_or_else(|_| "section9".to_string());
+        let username = std::env::var("AMARAKI_AUTH_USER")
+            .or_else(|_| std::env::var("ARAMAKI_AUTH_USER"))
+            .unwrap_or_else(|_| "admin".to_string());
+        let password = std::env::var("AMARAKI_AUTH_PASSWORD")
+            .or_else(|_| std::env::var("ARAMAKI_AUTH_PASSWORD"))
+            .unwrap_or_else(|_| "section9".to_string());
 
-        let api_key = std::env::var("ARAMAKI_API_KEY").ok();
-        let allow_anonymous_metrics = std::env::var("ARAMAKI_ALLOW_ANONYMOUS_METRICS")
+        let api_key = std::env::var("AMARAKI_API_KEY")
+            .or_else(|_| std::env::var("ARAMAKI_API_KEY"))
+            .ok();
+        let allow_anonymous_metrics = std::env::var("AMARAKI_ALLOW_ANONYMOUS_METRICS")
+            .or_else(|_| std::env::var("ARAMAKI_ALLOW_ANONYMOUS_METRICS"))
             .map(|v| v != "false" && v != "0")
             .unwrap_or(true);
 
         info!(
-            "Sécurité de l'interface Aramaki activée pour l'utilisateur '{}' (Scraping anonyme metrics : {})",
+            "Sécurité de l'interface Amaraki activée pour l'utilisateur '{}' (Scraping anonyme metrics : {})",
             username, allow_anonymous_metrics
         );
 
@@ -119,7 +125,7 @@ pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
         if let Ok(cookie_str) = cookie_hdr.to_str() {
             for cookie in cookie_str.split(';') {
                 let parts: Vec<&str> = cookie.trim().splitn(2, '=').collect();
-                if parts.len() == 2 && parts[0] == "aramaki_session" {
+                if parts.len() == 2 && (parts[0] == "amaraki_session" || parts[0] == "aramaki_session") {
                     return Some(parts[1].to_string());
                 }
             }

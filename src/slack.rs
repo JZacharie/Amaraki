@@ -30,7 +30,7 @@ impl SlackNotifier {
             .ok()
             .filter(|t| !t.trim().is_empty());
         if token.is_some() {
-            info!("[SLACK] ✅ SLACK_BOT_TOKEN détecté et actif pour Chef Aramaki");
+            info!("[SLACK] ✅ SLACK_BOT_TOKEN détecté et actif pour Chef Amaraki");
         } else {
             info!(
                 "[SLACK] ℹ️ SLACK_BOT_TOKEN non configuré (mode autonome sans notifications Slack)"
@@ -248,8 +248,8 @@ impl SlackNotifier {
             channel,
             text,
             thread_ts,
-            username: "Chef Aramaki",
-            icon_url: "https://aramaki.p.zacharie.org/logo.png",
+            username: "Chef Amaraki",
+            icon_url: "https://amaraki.p.zacharie.org/logo.png",
         };
 
         match self
@@ -280,8 +280,8 @@ impl SlackNotifier {
                                 channel,
                                 text,
                                 thread_ts: None,
-                                username: "Chef Aramaki",
-                                icon_url: "https://aramaki.p.zacharie.org/logo.png",
+                                username: "Chef Amaraki",
+                                icon_url: "https://amaraki.p.zacharie.org/logo.png",
                             };
                             if let Ok(retry_resp) = self
                                 .client

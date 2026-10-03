@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="assets/logo.png" alt="Aramaki Logo" width="200"/>
+  <img src="assets/logo.png" alt="Amaraki Logo" width="200"/>
 
-  # Aramaki
+  # Amaraki
 
   **Chief Section 9 — Agent Orchestrator & Dynamic K8s Job Provisioner for Slack**
 
@@ -20,11 +20,11 @@
 
 ## English
 
-### What is Aramaki?
+### What is Amaraki?
 
-**Aramaki** is a Slack-native AI agent orchestrator written in Rust. Named after the chief of Section 9 in *Ghost in the Shell*, it acts as a command bridge between Slack conversations and Kubernetes-powered AI agents.
+**Amaraki** is a Slack-native AI agent orchestrator written in Rust. Named after the chief of Section 9 in *Ghost in the Shell*, it acts as a command bridge between Slack conversations and Kubernetes-powered AI agents.
 
-When a user mentions `@aramaki` or sends a message in an active thread, Aramaki:
+When a user mentions `@amaraki` (or `@aramaki`) or sends a message in an active thread, Amaraki:
 
 1. **Understands** the intent (email summary, code review, K8s diagnosis, incident response…)
 2. **Confirms** the action with the user before executing
@@ -63,11 +63,14 @@ Key components:
 
 - 🎙️ **Voice-to-text** — Transcribes Slack audio/video files via Whisper API
 - 🤖 **Smart routing** — Detects intent keywords and routes to the right agent
-- ✅ **Human-in-the-loop** — Always asks for confirmation before launching a job
+- 💬 **Joe's #ai Channel Bridge** — Automatically intercepts messages from Joe on `#ai` and routes instructions to agents
+- 📦 **Skills import** — Installs dynamic skills from [skills.sh](https://skills.sh) (e.g. `find-skills`) at agent launch
+- 🛠️ **Local & Remote MCP** — Runner image includes Node.js LTS, uv, and Python 3 to run local MCP servers
+- ✅ **Human-in-the-loop** — Asks for confirmation before launching a job (or direct execution for designated command channels)
 - 🔄 **K8s native** — Agents are declared as ConfigMaps, executed as K8s Jobs
 - 📊 **Dashboard** — Web UI with live stats, agent list, execution history
 - 📈 **Observability** — Prometheus `/metrics` + OpenTelemetry `/api/otel/v1/metrics`
-- 🔒 **Auth** — Cookie-based session login, optional API key, configurable credentials
+- 🔒 **Auth** — Cookie-based session login (`amaraki_session`), optional API key, configurable credentials
 - 🐳 **Container-ready** — Multi-stage Dockerfile, GHCR auto-publish via GitHub Actions
 
 ---
@@ -78,7 +81,7 @@ Key components:
 
 - Rust 2021+ (`cargo`)
 - Docker (optional, for containerized deployment)
-- A Kubernetes cluster (optional, Aramaki runs in standalone mode without it)
+- A Kubernetes cluster (optional, Amaraki runs in standalone mode without it)
 - A Slack Bot Token (`SLACK_BOT_TOKEN`)
 
 #### Run locally
@@ -89,8 +92,8 @@ git clone https://github.com/jzacharie/Amaraki.git
 cd Amaraki
 
 # Run in standalone mode (no K8s required)
-ARAMAKI_AUTH_USER=admin \
-ARAMAKI_AUTH_PASSWORD=section9 \
+AMARAKI_AUTH_USER=admin \
+AMARAKI_AUTH_PASSWORD=section9 \
 SLACK_BOT_TOKEN=xoxb-your-token \
 cargo run --release
 ```
@@ -111,29 +114,31 @@ Runs `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, and op
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` / `ARAMAKI_PORT` | `3000` | HTTP listen port |
-| `ARAMAKI_HOST` | `0.0.0.0` | HTTP listen host |
-| `POD_NAMESPACE` | `aramaki` | Kubernetes namespace |
+| `PORT` / `AMARAKI_PORT` | `3000` | HTTP listen port (legacy `ARAMAKI_PORT` supported) |
+| `AMARAKI_HOST` | `0.0.0.0` | HTTP listen host (legacy `ARAMAKI_HOST` supported) |
+| `POD_NAMESPACE` | `amaraki` | Kubernetes namespace |
 | `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode:latest` | Docker image used for K8s Jobs |
 | `SLACK_BOT_TOKEN` | *(none)* | Slack bot token (`xoxb-…`) |
+| `SLACK_AI_CHANNEL_ID` | `ai` | Slack channel ID / name for AI commands |
+| `SLACK_JOE_USER_ID` | `joe` | User ID / email for Joe |
 | `WHISPER_URL` | `http://speaches.speaches.svc.cluster.local:8000/v1/audio/transcriptions` | Whisper ASR endpoint |
-| `ARAMAKI_AUTH_USER` | `admin` | Dashboard login username |
-| `ARAMAKI_AUTH_PASSWORD` | `section9` | Dashboard login password |
-| `ARAMAKI_API_KEY` | *(none)* | Optional static API key for authenticated endpoints |
-| `ARAMAKI_ALLOW_ANONYMOUS_METRICS` | `true` | Allow unauthenticated scraping of `/metrics` |
+| `AMARAKI_AUTH_USER` | `admin` | Dashboard login username (legacy `ARAMAKI_AUTH_USER` supported) |
+| `AMARAKI_AUTH_PASSWORD` | `section9` | Dashboard login password (legacy `ARAMAKI_AUTH_PASSWORD` supported) |
+| `AMARAKI_API_KEY` | *(none)* | Optional static API key for authenticated endpoints |
+| `AMARAKI_ALLOW_ANONYMOUS_METRICS` | `true` | Allow unauthenticated scraping of `/metrics` |
 
 ---
 
 ### Slack Setup
 
 1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
-2. Enable **Event Subscriptions** and point the Request URL to `https://your-domain/slack/events`
+2. Enable **Event Subscriptions** and point the Request URL to `https://amaraki.p.zacharie.org/slack/events`
 3. Subscribe to `message.channels` and `app_mention` bot events
 4. Add the `chat:write` OAuth scope and install the app to your workspace
 5. Set `SLACK_BOT_TOKEN` with the `xoxb-…` token
 
 **Trigger conditions:**
-- Bot is mentioned (`app_mention` event)
+- Bot is mentioned (`@amaraki` or `@aramaki`)
 - Message contains `amaraki` or `aramaki` (case-insensitive)
 - Message is in an active validation thread
 - Message contains an audio or video file (automatic Whisper transcription)
@@ -143,13 +148,13 @@ Runs `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, and op
 
 ### Agent Discovery (Kubernetes)
 
-Agents are declared as **ConfigMaps** in the target namespace. Each ConfigMap must contain an `agent.json` key:
+Agents are declared as **ConfigMaps** in the target namespace (e.g. `amaraki`). Each ConfigMap must contain an `agent.json` key:
 
 ```json
 {
   "name": "agent-code-reviewer",
   "description": "Reviews code and proposes architectural improvements",
-  "model": "openai/gpt-4o",
+  "model": "opencode/free-default-model",
   "system_prompt": "You are an expert code reviewer...",
   "mcp_servers": [
     {
@@ -168,7 +173,7 @@ Agents are declared as **ConfigMaps** in the target namespace. Each ConfigMap mu
 
 Skills are automatically installed at job startup via `npx -y skills add <skill> -y -g` (from [skills.sh](https://skills.sh)). The job image includes Python 3, Node.js LTS, and uv to execute local MCP servers.
 
-At startup, Aramaki discovers all ConfigMaps in the namespace and registers the agents. If none are found, default built-in agents are seeded.
+At startup, Amaraki discovers all ConfigMaps in the namespace and registers the agents. If none are found, default built-in agents are seeded.
 
 ---
 
@@ -188,7 +193,7 @@ At startup, Aramaki discovers all ConfigMaps in the namespace and registers the 
 | `POST` | `/api/auth/login` | None | Login |
 | `POST` | `/api/auth/logout` | Session | Logout |
 
-*\* Public if `ARAMAKI_ALLOW_ANONYMOUS_METRICS=true`*
+*\* Public if `AMARAKI_ALLOW_ANONYMOUS_METRICS=true`*
 
 ---
 
@@ -203,7 +208,7 @@ docker pull ghcr.io/jzacharie/amaraki:latest
 # Run
 docker run -p 3000:3000 \
   -e SLACK_BOT_TOKEN=xoxb-... \
-  -e ARAMAKI_AUTH_PASSWORD=changeme \
+  -e AMARAKI_AUTH_PASSWORD=changeme \
   ghcr.io/jzacharie/amaraki:latest
 ```
 
@@ -213,11 +218,11 @@ docker run -p 3000:3000 \
 
 ## Français
 
-### Qu'est-ce qu'Aramaki ?
+### Qu'est-ce qu'Amaraki ?
 
-**Aramaki** est un orchestrateur d'agents IA natif Slack, écrit en Rust. Nommé d'après le chef de la Section 9 dans *Ghost in the Shell*, il joue le rôle de pont de commandement entre les conversations Slack et les agents IA hébergés sur Kubernetes.
+**Amaraki** est un orchestrateur d'agents IA natif Slack, écrit en Rust. Nommé d'après le chef de la Section 9 dans *Ghost in the Shell*, il joue le rôle de pont de commandement entre les conversations Slack et les agents IA hébergés sur Kubernetes.
 
-Lorsqu'un utilisateur mentionne `@aramaki` ou envoie un message dans un fil actif, Aramaki :
+Lorsqu'un utilisateur mentionne `@amaraki` (ou `@aramaki`) ou envoie un message dans un fil actif, Amaraki :
 
 1. **Comprend** l'intention (synthèse d'e-mails, revue de code, diagnostic K8s, réponse à incident…)
 2. **Confirme** l'action avec l'utilisateur avant toute exécution
@@ -256,11 +261,14 @@ Composants principaux :
 
 - 🎙️ **Voix vers texte** — Transcription des fichiers audio/vidéo Slack via l'API Whisper
 - 🤖 **Routage intelligent** — Détection des mots-clés d'intention et sélection de l'agent approprié
+- 💬 **Pilotage canal #ai** — Interception automatique des messages de Joe sur le canal `#ai` pour piloter les agents
+- 📦 **Import de skills** — Téléchargement dynamique de compétences depuis [skills.sh](https://skills.sh) (ex. `find-skills`)
+- 🛠️ **MCP locaux et distants** — Image runner intégrant Node.js LTS, uv et Python 3 pour exécuter les serveurs MCP
 - ✅ **Validation humaine** — Demande systématique de confirmation avant le lancement d'un job
 - 🔄 **K8s natif** — Les agents sont déclarés comme ConfigMaps, exécutés comme des Jobs K8s
 - 📊 **Dashboard** — Interface Web avec statistiques en direct, liste des agents, historique d'exécution
 - 📈 **Observabilité** — Prometheus `/metrics` + OpenTelemetry `/api/otel/v1/metrics`
-- 🔒 **Auth** — Connexion par session (cookie), clé API optionnelle, credentials configurables
+- 🔒 **Auth** — Connexion par session (cookie `amaraki_session`), clé API optionnelle, credentials configurables
 - 🐳 **Prêt pour les conteneurs** — Dockerfile multi-étapes, publication automatique sur GHCR via GitHub Actions
 
 ---
@@ -271,7 +279,7 @@ Composants principaux :
 
 - Rust 2021+ (`cargo`)
 - Docker (optionnel, pour le déploiement conteneurisé)
-- Un cluster Kubernetes (optionnel, Aramaki fonctionne en mode autonome sans K8s)
+- Un cluster Kubernetes (optionnel, Amaraki fonctionne en mode autonome sans K8s)
 - Un token de bot Slack (`SLACK_BOT_TOKEN`)
 
 #### Lancement en local
@@ -282,8 +290,8 @@ git clone https://github.com/jzacharie/Amaraki.git
 cd Amaraki
 
 # Lancer en mode autonome (sans K8s requis)
-ARAMAKI_AUTH_USER=admin \
-ARAMAKI_AUTH_PASSWORD=section9 \
+AMARAKI_AUTH_USER=admin \
+AMARAKI_AUTH_PASSWORD=section9 \
 SLACK_BOT_TOKEN=xoxb-votre-token \
 cargo run --release
 ```
@@ -304,29 +312,31 @@ Exécute `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, et
 
 | Variable | Défaut | Description |
 |----------|--------|-------------|
-| `PORT` / `ARAMAKI_PORT` | `3000` | Port d'écoute HTTP |
-| `ARAMAKI_HOST` | `0.0.0.0` | Hôte d'écoute HTTP |
-| `POD_NAMESPACE` | `aramaki` | Namespace Kubernetes |
+| `PORT` / `AMARAKI_PORT` | `3000` | Port d'écoute HTTP (rétrocompatibilité `ARAMAKI_PORT`) |
+| `AMARAKI_HOST` | `0.0.0.0` | Hôte d'écoute HTTP (rétrocompatibilité `ARAMAKI_HOST`) |
+| `POD_NAMESPACE` | `amaraki` | Namespace Kubernetes |
 | `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode:latest` | Image Docker des Jobs K8s |
 | `SLACK_BOT_TOKEN` | *(aucun)* | Token du bot Slack (`xoxb-…`) |
+| `SLACK_AI_CHANNEL_ID` | `ai` | Identifiant ou nom du canal Slack dédié aux instructions IA |
+| `SLACK_JOE_USER_ID` | `joe` | Identifiant Slack ou adresse e-mail de Joe |
 | `WHISPER_URL` | `http://speaches.speaches.svc.cluster.local:8000/v1/audio/transcriptions` | Endpoint ASR Whisper |
-| `ARAMAKI_AUTH_USER` | `admin` | Identifiant de connexion au dashboard |
-| `ARAMAKI_AUTH_PASSWORD` | `section9` | Mot de passe de connexion au dashboard |
-| `ARAMAKI_API_KEY` | *(aucun)* | Clé API statique optionnelle pour les endpoints authentifiés |
-| `ARAMAKI_ALLOW_ANONYMOUS_METRICS` | `true` | Autoriser le scraping non authentifié de `/metrics` |
+| `AMARAKI_AUTH_USER` | `admin` | Identifiant de connexion au dashboard (rétrocompatibilité `ARAMAKI_AUTH_USER`) |
+| `AMARAKI_AUTH_PASSWORD` | `section9` | Mot de passe de connexion au dashboard (rétrocompatibilité `ARAMAKI_AUTH_PASSWORD`) |
+| `AMARAKI_API_KEY` | *(aucun)* | Clé API statique optionnelle pour les endpoints authentifiés |
+| `AMARAKI_ALLOW_ANONYMOUS_METRICS` | `true` | Autoriser le scraping non authentifié de `/metrics` |
 
 ---
 
 ### Configuration Slack
 
 1. Créez une application Slack sur [api.slack.com/apps](https://api.slack.com/apps)
-2. Activez les **Event Subscriptions** et configurez l'URL de requête sur `https://votre-domaine/slack/events`
+2. Activez les **Event Subscriptions** et configurez l'URL de requête sur `https://amaraki.p.zacharie.org/slack/events`
 3. Abonnez-vous aux événements bot `message.channels` et `app_mention`
 4. Ajoutez le scope OAuth `chat:write` et installez l'application sur votre espace de travail
 5. Définissez `SLACK_BOT_TOKEN` avec le token `xoxb-…`
 
 **Conditions de déclenchement :**
-- Le bot est mentionné (événement `app_mention`)
+- Le bot est mentionné (`@amaraki` ou `@aramaki`)
 - Le message contient `amaraki` ou `aramaki` (insensible à la casse)
 - Le message est dans un fil de validation actif
 - Le message contient un fichier audio ou vidéo (transcription automatique Whisper)
@@ -336,13 +346,13 @@ Exécute `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, et
 
 ### Découverte des agents (Kubernetes)
 
-Les agents sont déclarés comme des **ConfigMaps** dans le namespace cible. Chaque ConfigMap doit contenir une clé `agent.json` :
+Les agents sont déclarés comme des **ConfigMaps** dans le namespace cible (`amaraki`). Chaque ConfigMap doit contenir une clé `agent.json` :
 
 ```json
 {
   "name": "agent-code-reviewer",
   "description": "Effectue des revues de code et propose des améliorations architecturales",
-  "model": "openai/gpt-4o",
+  "model": "opencode/free-default-model",
   "system_prompt": "Tu es un expert en revue de code...",
   "mcp_servers": [
     {
@@ -361,7 +371,7 @@ Les agents sont déclarés comme des **ConfigMaps** dans le namespace cible. Cha
 
 Les skills sont automatiquement importés au démarrage du job via `npx -y skills add <skill> -y -g` (catalogue [skills.sh](https://skills.sh)). L'image opencode embarque Python 3, Node.js LTS, et uv pour lancer tous les serveurs MCP locaux.
 
-Au démarrage, Aramaki découvre tous les ConfigMaps du namespace et enregistre les agents. Si aucun n'est trouvé, des agents intégrés par défaut sont chargés.
+Au démarrage, Amaraki découvre tous les ConfigMaps du namespace et enregistre les agents. Si aucun n'est trouvé, des agents intégrés par défaut sont chargés.
 
 ---
 
@@ -381,7 +391,7 @@ Au démarrage, Aramaki découvre tous les ConfigMaps du namespace et enregistre 
 | `POST` | `/api/auth/login` | Aucune | Connexion |
 | `POST` | `/api/auth/logout` | Session | Déconnexion |
 
-*\* Public si `ARAMAKI_ALLOW_ANONYMOUS_METRICS=true`*
+*\* Public si `AMARAKI_ALLOW_ANONYMOUS_METRICS=true`*
 
 ---
 
@@ -396,7 +406,7 @@ docker pull ghcr.io/jzacharie/amaraki:latest
 # Lancer
 docker run -p 3000:3000 \
   -e SLACK_BOT_TOKEN=xoxb-... \
-  -e ARAMAKI_AUTH_PASSWORD=changeme \
+  -e AMARAKI_AUTH_PASSWORD=changeme \
   ghcr.io/jzacharie/amaraki:latest
 ```
 

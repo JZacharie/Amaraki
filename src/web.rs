@@ -203,7 +203,7 @@ pub async fn login_handler(
         );
         let session_token = state.auth.create_session(&payload.username).await;
         let cookie_val = format!(
-            "aramaki_session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400",
+            "amaraki_session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400",
             session_token
         );
 
@@ -252,7 +252,7 @@ pub async fn logout_handler(
     }
     tracing::info!("[AUTH] 🚪 Déconnexion utilisateur | ip: {}", client_ip);
 
-    let cookie_clear = "aramaki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+    let cookie_clear = "amaraki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
     let mut response = (
         StatusCode::OK,
         Json(serde_json::json!({ "status": "logged_out" })),
@@ -261,7 +261,13 @@ pub async fn logout_handler(
     if let Ok(cookie_header) = header::HeaderValue::from_str(cookie_clear) {
         response
             .headers_mut()
-            .insert(header::SET_COOKIE, cookie_header);
+            .insert(header::SET_COOKIE, cookie_header.clone());
+    }
+    // Also clear legacy cookie if present
+    if let Ok(legacy_clear) = header::HeaderValue::from_str("aramaki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0") {
+        response
+            .headers_mut()
+            .append(header::SET_COOKIE, legacy_clear);
     }
     response
 }
@@ -325,7 +331,7 @@ pub async fn agent_callback_handler(
         .map(|d| format!("{:.1}s", d))
         .unwrap_or_else(|| "N/A".to_string());
     let slack_msg = format!(
-        "{} *Chef Aramaki (Section 9)* : Rapport d'intervention pour `{}`\n• *Statut* : {}\n• *Durée* : {}",
+        "{} *Chef Amaraki (Section 9)* : Rapport d'intervention pour `{}`\n• *Statut* : {}\n• *Durée* : {}",
         emoji, payload.job_id, status_str, duration_str
     );
     state
@@ -372,7 +378,7 @@ pub async fn test_trigger_handler(
         {
             Ok(job_id) => {
                 let slack_msg = format!(
-                    "🫡 *Chef Aramaki (Section 9)* : Lancement de l'agent *{}* sur `{}`.\n• *Job K8s* : `{}`\n• *Mission* : \"{}\"",
+                    "🫡 *Chef Amaraki (Section 9)* : Lancement de l'agent *{}* sur `{}`.\n• *Job K8s* : `{}`\n• *Mission* : \"{}\"",
                     agent_name, channel, job_id, prompt
                 );
                 state
@@ -405,7 +411,7 @@ pub async fn test_trigger_handler(
             &uuid::Uuid::new_v4().to_string()[..8]
         );
         let slack_msg = format!(
-            "🫡 *Chef Aramaki (Section 9)* : [Simulation] Agent *{}* prêt sur `{}`\n• *Mission* : \"{}\"",
+            "🫡 *Chef Amaraki (Section 9)* : [Simulation] Agent *{}* prêt sur `{}`\n• *Mission* : \"{}\"",
             agent_name, channel, prompt
         );
         state
@@ -469,7 +475,7 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aramaki // Section 9 - Authentification</title>
+  <title>Amaraki // Section 9 - Authentification</title>
   <link rel="icon" type="image/png" href="/logo.png">
   <style>
     :root {
@@ -601,10 +607,10 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <body>
   <div class="login-card">
     <div style="display:flex; justify-content:center; margin-bottom:1.5rem;">
-      <img src="/logo.png" alt="Chef Aramaki" style="width:105px; height:105px; border-radius:50%; border:2px solid var(--accent-cyan); box-shadow:0 0 25px rgba(0,242,254,0.4); object-fit:cover;">
+      <img src="/logo.png" alt="Chef Amaraki" style="width:105px; height:105px; border-radius:50%; border:2px solid var(--accent-cyan); box-shadow:0 0 25px rgba(0,242,254,0.4); object-fit:cover;">
     </div>
     <span class="badge">Section 9 // Security Gateway</span>
-    <h1>Aramaki Orchestrator</h1>
+    <h1>Amaraki Orchestrator</h1>
     <p class="subtitle">Connexion au centre de contrôle des agents</p>
 
     <form id="loginForm">
@@ -671,7 +677,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aramaki // Section 9 Agent Orchestrator & Observability</title>
+  <title>Amaraki // Section 9 Agent Orchestrator & Observability</title>
   <link rel="icon" type="image/png" href="/logo.png">
   <style>
     :root {
@@ -1262,10 +1268,10 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <body>
   <header>
     <div class="brand">
-      <img src="/logo.png" alt="Chef Aramaki" style="width:48px; height:48px; border-radius:50%; border:2px solid var(--accent-cyan); box-shadow:0 0 16px rgba(0,242,254,0.35); object-fit:cover; margin-right:0.85rem; flex-shrink:0;">
+      <img src="/logo.png" alt="Chef Amaraki" style="width:48px; height:48px; border-radius:50%; border:2px solid var(--accent-cyan); box-shadow:0 0 16px rgba(0,242,254,0.35); object-fit:cover; margin-right:0.85rem; flex-shrink:0;">
       <div>
         <span class="sub">Chief Section 9 // K8s AI Orchestrator</span>
-        <h1>Aramaki Monitor & Metrics</h1>
+        <h1>Amaraki Monitor & Metrics</h1>
       </div>
     </div>
     <div class="header-actions">
@@ -1336,7 +1342,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
           <span>⏱️</span>
         </div>
         <div class="kpi-value" style="font-size:1.45rem;" id="kpiUptime">--</div>
-        <div class="kpi-sub" id="kpiNamespace">Namespace: aramaki</div>
+        <div class="kpi-sub" id="kpiNamespace">Namespace: amaraki</div>
       </div>
     </div>
 
@@ -1454,7 +1460,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   </main>
 
   <footer>
-    Aramaki v0.1.0 // Section 9 Autonomous Orchestration & Dynamic Provisioning Cluster
+    Amaraki v0.1.0 // Section 9 Autonomous Orchestration & Dynamic Provisioning Cluster
   </footer>
 
   <!-- Modal Agent Details & Export JSON -->
@@ -1610,7 +1616,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
       }
 
       document.getElementById('kpiUptime').textContent = data.uptime_formatted || '--';
-      document.getElementById('kpiNamespace').textContent = 'Namespace: ' + (data.status.namespace || 'aramaki');
+      document.getElementById('kpiNamespace').textContent = 'Namespace: ' + (data.status.namespace || 'amaraki');
 
       // 3. Agents Table
       renderAgentsTable(data.agents || []);

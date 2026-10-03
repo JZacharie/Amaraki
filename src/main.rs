@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("=== Démarrage d'Aramaki (Chief Section 9 Agent Orchestrator & Observability) ===");
 
-    let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "aramaki".to_string());
+    let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "amaraki".to_string());
     let agent_runner_image = std::env::var("AGENT_RUNNER_IMAGE")
         .unwrap_or_else(|_| "ghcr.io/jzacharie/opencode:latest".to_string());
 
@@ -211,8 +211,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth::access_log_middleware(auth, req, next)
         }));
 
-    let host = std::env::var("ARAMAKI_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let host = std::env::var("AMARAKI_HOST")
+        .or_else(|_| std::env::var("ARAMAKI_HOST"))
+        .unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")
+        .or_else(|_| std::env::var("AMARAKI_PORT"))
         .or_else(|_| std::env::var("ARAMAKI_PORT"))
         .unwrap_or_else(|_| "3000".to_string())
         .parse::<u16>()
@@ -220,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = SocketAddr::new(host.parse()?, port);
     info!(
-        "[ACTION] 🌐 Interface Web & Orchestrateur Aramaki accessibles sur http://{}",
+        "[ACTION] 🌐 Interface Web & Orchestrateur Amaraki accessibles sur http://{}",
         addr
     );
     info!("Dashboard Web sécurisé : http://{}/", addr);
