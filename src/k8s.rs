@@ -202,6 +202,72 @@ pub async fn discover_all_agents(
     Ok(count)
 }
 
+/// Architecture on which every Amaraki-piloted Job is pinned by default.
+pub const DEFAULT_AGENT_NODE_ARCH: &str = "amd64";
+
+/// Parse a node selector expression into a JSON object.
+///
+/// Accepts either a JSON object (`{"kubernetes.io/arch":"amd64"}`) or a
+/// comma-separated `key=value` list (`kubernetes.io/arch=amd64,gpu=true`).
+/// Returns `None` when the expression is empty or malformed.
+fn parse_node_selector(raw: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.starts_with('{') {
+        let parsed: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        let map = parsed.as_object()?.clone();
+        return if map.is_empty() { None } else { Some(map) };
+    }
+
+    let mut map = serde_json::Map::new();
+    for pair in trimmed.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = pair.split_once('=')?;
+        let (key, value) = (key.trim(), value.trim());
+        if key.is_empty() || value.is_empty() {
+            return None;
+        }
+        map.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
+}
+
+/// Node selector enforced on the Pod template of every agent Job.
+///
+/// Defaults to `kubernetes.io/arch=amd64`: any Job piloted by Amaraki (for
+/// example `opencode-mail-<id>`) can therefore only be scheduled on amd64
+/// nodes. `AGENT_NODE_SELECTOR` overrides it (JSON object or
+/// `key=value,key2=value2`); an empty or invalid value falls back to amd64 so
+/// the pin is never silently lost.
+pub fn agent_node_selector() -> serde_json::Map<String, serde_json::Value> {
+    std::env::var("AGENT_NODE_SELECTOR")
+        .ok()
+        .as_deref()
+        .and_then(parse_node_selector)
+        .unwrap_or_else(|| {
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "kubernetes.io/arch".to_string(),
+                serde_json::Value::String(DEFAULT_AGENT_NODE_ARCH.to_string()),
+            );
+            map
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_agent_job(
     client: &kube::Client,
@@ -378,6 +444,9 @@ pub async fn spawn_agent_job(
     let service_account_name =
         std::env::var("AGENT_SERVICE_ACCOUNT").unwrap_or_else(|_| "amaraki-sa".to_string());
 
+    // Force l'architecture des Jobs pilotés par Amaraki (amd64 par défaut).
+    let node_selector = agent_node_selector();
+
     let job_manifest: Job = serde_json::from_value(json!({
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -395,6 +464,7 @@ pub async fn spawn_agent_job(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": service_account_name,
+                    "nodeSelector": node_selector,
                     "imagePullSecrets": pull_secrets_vec,
                     "securityContext": {
                         "runAsNonRoot": true,
@@ -949,5 +1019,54 @@ mod tests {
         let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
         assert_eq!(config.name, "agent-simple");
         assert!(config.skills.is_none());
+    }
+
+    #[test]
+    fn test_parse_node_selector_accepts_key_value_list() {
+        let map = parse_node_selector("kubernetes.io/arch=amd64,gpu=true").unwrap();
+        assert_eq!(map.get("kubernetes.io/arch").unwrap(), "amd64");
+        assert_eq!(map.get("gpu").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_parse_node_selector_accepts_json_object() {
+        let map = parse_node_selector(r#"{"kubernetes.io/arch":"amd64"}"#).unwrap();
+        assert_eq!(map.get("kubernetes.io/arch").unwrap(), "amd64");
+    }
+
+    #[test]
+    fn test_parse_node_selector_rejects_empty_or_malformed() {
+        assert!(parse_node_selector("").is_none());
+        assert!(parse_node_selector("   ").is_none());
+        assert!(parse_node_selector("{}").is_none());
+        assert!(parse_node_selector("kubernetes.io/arch").is_none());
+        assert!(parse_node_selector("kubernetes.io/arch=").is_none());
+    }
+
+    #[test]
+    fn test_agent_node_selector_defaults_to_amd64() {
+        // Sérialisé séquentiellement : aucune autre suite de tests ne doit
+        // écrire cette variable en parallèle.
+        let previous = std::env::var("AGENT_NODE_SELECTOR").ok();
+
+        std::env::remove_var("AGENT_NODE_SELECTOR");
+        let default_selector = agent_node_selector();
+        assert_eq!(default_selector.get("kubernetes.io/arch").unwrap(), "amd64");
+
+        std::env::set_var("AGENT_NODE_SELECTOR", "kubernetes.io/arch=arm64");
+        let overridden = agent_node_selector();
+        assert_eq!(overridden.get("kubernetes.io/arch").unwrap(), "arm64");
+
+        // Une valeur vide ou invalide retombe sur le pin amd64.
+        std::env::set_var("AGENT_NODE_SELECTOR", "  ");
+        assert_eq!(
+            agent_node_selector().get("kubernetes.io/arch").unwrap(),
+            "amd64"
+        );
+
+        match previous {
+            Some(value) => std::env::set_var("AGENT_NODE_SELECTOR", value),
+            None => std::env::remove_var("AGENT_NODE_SELECTOR"),
+        }
     }
 }

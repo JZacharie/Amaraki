@@ -118,6 +118,9 @@ Runs `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, and op
 | `AMARAKI_HOST` | `0.0.0.0` | HTTP listen host (legacy `ARAMAKI_HOST` supported) |
 | `POD_NAMESPACE` | `amaraki` | Kubernetes namespace |
 | `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode:latest` | Docker image used for K8s Jobs |
+| `AGENT_NODE_SELECTOR` | `kubernetes.io/arch=amd64` | Node selector forced on every agent Job Pod (JSON object or `key=value,…`). Jobs such as `opencode-mail-*` can therefore only run on amd64 nodes |
+| `IMAGE_PULL_SECRETS` | `regcred` | Comma-separated `imagePullSecrets` for agent Jobs |
+| `AGENT_SERVICE_ACCOUNT` | `amaraki-sa` | Service account used by agent Jobs |
 | `SLACK_BOT_TOKEN` | *(none)* | Slack bot token (`xoxb-…`) |
 | `SLACK_AI_CHANNEL_ID` | `ai` | Slack channel ID / name for AI commands |
 | `SLACK_JOE_USER_ID` | `joe` | User ID / email for Joe |
@@ -317,6 +320,9 @@ Exécute `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, et
 | `AMARAKI_HOST` | `0.0.0.0` | Hôte d'écoute HTTP (rétrocompatibilité `ARAMAKI_HOST`) |
 | `POD_NAMESPACE` | `amaraki` | Namespace Kubernetes |
 | `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode:latest` | Image Docker des Jobs K8s |
+| `AGENT_NODE_SELECTOR` | `kubernetes.io/arch=amd64` | Node selector imposé au Pod de chaque Job d'agent (objet JSON ou `clé=valeur,…`). Les Jobs type `opencode-mail-*` ne peuvent donc s'exécuter que sur des nœuds amd64 |
+| `IMAGE_PULL_SECRETS` | `regcred` | `imagePullSecrets` (séparés par des virgules) des Jobs d'agent |
+| `AGENT_SERVICE_ACCOUNT` | `amaraki-sa` | Service account utilisé par les Jobs d'agent |
 | `SLACK_BOT_TOKEN` | *(aucun)* | Token du bot Slack (`xoxb-…`) |
 | `SLACK_AI_CHANNEL_ID` | `ai` | Identifiant ou nom du canal Slack dédié aux instructions IA |
 | `SLACK_JOE_USER_ID` | `joe` | Identifiant Slack ou adresse e-mail de Joe |
