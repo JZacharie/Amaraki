@@ -264,7 +264,9 @@ pub async fn logout_handler(
             .insert(header::SET_COOKIE, cookie_header.clone());
     }
     // Also clear legacy cookie if present
-    if let Ok(legacy_clear) = header::HeaderValue::from_str("aramaki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0") {
+    if let Ok(legacy_clear) =
+        header::HeaderValue::from_str("aramaki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+    {
         response
             .headers_mut()
             .append(header::SET_COOKIE, legacy_clear);

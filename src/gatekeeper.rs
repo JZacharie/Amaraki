@@ -147,11 +147,18 @@ impl GatekeeperStore {
             return true;
         }
 
-        // Condition 4: Messages de Joe sur le canal AI de Slack
+        // Condition 4: Messages sur le canal AI de Slack (texte ou audio) ou venant de Joe
         if let Some(s) = slack {
-            if s.is_ai_channel(channel).await && s.is_joe_user(user_id).await {
+            if s.is_ai_channel(channel).await {
                 info!(
-                    "[GATEKEEPER] 🎯 Message de Joe intercepté sur le canal AI '{}' (user: '{}') -> activation de l'agent",
+                    "[GATEKEEPER] 🎯 Message intercepté sur le canal AI '{}' (user: '{}') -> activation de l'agent",
+                    channel, user_id
+                );
+                return true;
+            }
+            if s.is_joe_user(user_id).await {
+                info!(
+                    "[GATEKEEPER] 🎯 Message de Joe intercepté (canal: '{}', user: '{}') -> activation de l'agent",
                     channel, user_id
                 );
                 return true;
@@ -159,11 +166,21 @@ impl GatekeeperStore {
         } else {
             let is_ai = channel.eq_ignore_ascii_case("ai")
                 || channel.contains("ai")
-                || std::env::var("SLACK_AI_CHANNEL_ID").map(|c| c == channel).unwrap_or(false);
+                || std::env::var("SLACK_AI_CHANNEL_ID")
+                    .map(|c| {
+                        c.split(',')
+                            .any(|ch| ch.trim().eq_ignore_ascii_case(channel))
+                    })
+                    .unwrap_or(false);
             let is_joe = user_id.eq_ignore_ascii_case("joe")
                 || user_id.eq_ignore_ascii_case("joseph")
-                || std::env::var("SLACK_JOE_USER_ID").map(|u| u == user_id).unwrap_or(false);
-            if is_ai && is_joe {
+                || std::env::var("SLACK_JOE_USER_ID")
+                    .map(|u| {
+                        u.split(',')
+                            .any(|us| us.trim().eq_ignore_ascii_case(user_id))
+                    })
+                    .unwrap_or(false);
+            if is_ai || is_joe {
                 return true;
             }
         }
@@ -202,22 +219,27 @@ impl GatekeeperStore {
         }
         if lower.contains("opencode-mail") || lower.contains("mail-agent") {
             let agent = "opencode-mail".to_string();
-            let summary = "consulter la boîte Gmail, filtrer les urgences et produire une synthèse".to_string();
+            let summary = "consulter la boîte Gmail, filtrer les urgences et produire une synthèse"
+                .to_string();
             return (agent, summary);
         }
         if lower.contains("agent-code-reviewer") || lower.contains("code-reviewer") {
             let agent = "agent-code-reviewer".to_string();
-            let summary = "analyser le code source et proposer des optimisations techniques".to_string();
+            let summary =
+                "analyser le code source et proposer des optimisations techniques".to_string();
             return (agent, summary);
         }
         if lower.contains("agent-k8s-diagnostician") || lower.contains("k8s-diagnostician") {
             let agent = "agent-k8s-diagnostician".to_string();
-            let summary = "diagnostiquer l'état des pods et analyser les anomalies du cluster Kubernetes".to_string();
+            let summary =
+                "diagnostiquer l'état des pods et analyser les anomalies du cluster Kubernetes"
+                    .to_string();
             return (agent, summary);
         }
         if lower.contains("agent-incident-responder") || lower.contains("incident-responder") {
             let agent = "agent-incident-responder".to_string();
-            let summary = "coordonner l'investigation et la réponse à l'incident critique".to_string();
+            let summary =
+                "coordonner l'investigation et la réponse à l'incident critique".to_string();
             return (agent, summary);
         }
 
@@ -234,11 +256,18 @@ impl GatekeeperStore {
         }
 
         // 2. Mail & Urgences Mails
+        let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
         if lower.contains("mail")
             || lower.contains("email")
             || lower.contains("courriel")
-            || lower.contains("urgences")
+            || lower.contains("urgence")
+            || lower.contains("urgent")
+            || lower.contains("inbox")
             || lower.contains("gmail")
+            || lower.contains("boite aux lettres")
+            || lower.contains("boîte aux lettres")
+            || lower.contains("messagerie")
+            || words.contains(&"bal")
         {
             let agent = "opencode-mail".to_string();
             let summary = "consulter la boîte Gmail de Joseph ZACHARIE, filtrer les urgences depuis la veille 18h et produire une synthèse concise".to_string();
@@ -404,21 +433,107 @@ mod tests {
         let gatekeeper = GatekeeperStore::new();
 
         // 1. Direct mention
-        assert!(gatekeeper.should_trigger("app_mention", "hello", "C123", "U_OTHER", None, false, None).await);
-        assert!(gatekeeper.should_trigger("message", "hello amaraki", "C123", "U_OTHER", None, false, None).await);
+        assert!(
+            gatekeeper
+                .should_trigger("app_mention", "hello", "C123", "U_OTHER", None, false, None)
+                .await
+        );
+        assert!(
+            gatekeeper
+                .should_trigger(
+                    "message",
+                    "hello amaraki",
+                    "C123",
+                    "U_OTHER",
+                    None,
+                    false,
+                    None
+                )
+                .await
+        );
 
         // 2. Audio/video media
-        assert!(gatekeeper.should_trigger("message", "voice", "C123", "U_OTHER", None, true, None).await);
+        assert!(
+            gatekeeper
+                .should_trigger("message", "voice", "C123", "U_OTHER", None, true, None)
+                .await
+        );
 
         // 3. DM
-        assert!(gatekeeper.should_trigger("message", "hello", "D12345", "U_OTHER", None, false, None).await);
+        assert!(
+            gatekeeper
+                .should_trigger("message", "hello", "D12345", "U_OTHER", None, false, None)
+                .await
+        );
 
-        // 4. Joe in AI channel
-        assert!(gatekeeper.should_trigger("message", "relance le pod traefik", "ai", "joe", None, false, None).await);
-        assert!(gatekeeper.should_trigger("message", "fais les courses", "ai", "joseph", None, false, None).await);
+        // 4. Any text message in AI channel (even from unknown user ID or Joe ID)
+        assert!(
+            gatekeeper
+                .should_trigger(
+                    "message",
+                    "check ma bal et dis moi s'il y a une urgence",
+                    "ai",
+                    "U29TP96P8",
+                    None,
+                    false,
+                    None
+                )
+                .await
+        );
+        assert!(
+            gatekeeper
+                .should_trigger(
+                    "message",
+                    "relance le pod traefik",
+                    "ai",
+                    "joe",
+                    None,
+                    false,
+                    None
+                )
+                .await
+        );
+        assert!(
+            gatekeeper
+                .should_trigger(
+                    "message",
+                    "fais les courses",
+                    "ai",
+                    "joseph",
+                    None,
+                    false,
+                    None
+                )
+                .await
+        );
+        assert!(
+            gatekeeper
+                .should_trigger(
+                    "message",
+                    "n'importe quel texte",
+                    "ai",
+                    "unknown_user",
+                    None,
+                    false,
+                    None
+                )
+                .await
+        );
 
         // 5. Other user without keyword on non-DM channel should NOT trigger
-        assert!(!gatekeeper.should_trigger("message", "coucou tout le monde", "general", "user1", None, false, None).await);
+        assert!(
+            !gatekeeper
+                .should_trigger(
+                    "message",
+                    "coucou tout le monde",
+                    "general",
+                    "user1",
+                    None,
+                    false,
+                    None
+                )
+                .await
+        );
     }
 
     #[test]
@@ -431,10 +546,15 @@ mod tests {
         assert_eq!(agent, "opencode-mail");
 
         // Keywords
-        let (agent, _) = GatekeeperStore::analyze_intent("ajoute des fruits au panier du drive leclerc");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("ajoute des fruits au panier du drive leclerc");
         assert_eq!(agent, "opencode-leclerc");
 
         let (agent, _) = GatekeeperStore::analyze_intent("regarde si j'ai reçu un mail urgent");
+        assert_eq!(agent, "opencode-mail");
+
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("check ma bal et dis moi s'il y a une urgence");
         assert_eq!(agent, "opencode-mail");
 
         let (agent, _) = GatekeeperStore::analyze_intent("vérifie les pods du cluster k8s");

@@ -76,10 +76,11 @@ impl SlackNotifier {
             return false;
         }
 
-        // Correspondance directe par nom
+        // Correspondance directe par nom ou ID Slack connu
         if trimmed.eq_ignore_ascii_case("ai")
             || trimmed.eq_ignore_ascii_case("c_ai")
             || trimmed.eq_ignore_ascii_case("ai-monitoring")
+            || trimmed == "C0AC8NGNESY"
         {
             return true;
         }
@@ -151,6 +152,7 @@ impl SlackNotifier {
             || trimmed.eq_ignore_ascii_case("joseph")
             || trimmed.eq_ignore_ascii_case("jzacharie")
             || trimmed.eq_ignore_ascii_case("u_joe")
+            || trimmed == "U29TP96P8"
         {
             return true;
         }
@@ -224,6 +226,16 @@ impl SlackNotifier {
                             cache.insert(trimmed.to_string(), is_joe);
                             return is_joe;
                         }
+                    } else {
+                        let err_msg = json
+                            .get("error")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("unknown");
+                        tracing::debug!(
+                            "[SLACK] users.info pour '{}' a échoué (error: {})",
+                            trimmed,
+                            err_msg
+                        );
                     }
                 }
             }

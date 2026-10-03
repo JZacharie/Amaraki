@@ -125,7 +125,9 @@ pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
         if let Ok(cookie_str) = cookie_hdr.to_str() {
             for cookie in cookie_str.split(';') {
                 let parts: Vec<&str> = cookie.trim().splitn(2, '=').collect();
-                if parts.len() == 2 && (parts[0] == "amaraki_session" || parts[0] == "aramaki_session") {
+                if parts.len() == 2
+                    && (parts[0] == "amaraki_session" || parts[0] == "aramaki_session")
+                {
                     return Some(parts[1].to_string());
                 }
             }
