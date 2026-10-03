@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "aramaki".to_string());
     let agent_runner_image = std::env::var("AGENT_RUNNER_IMAGE")
-        .unwrap_or_else(|_| "ghcr.io/jzacharie/opencode-agent:latest".to_string());
+        .unwrap_or_else(|_| "ghcr.io/jzacharie/opencode:latest".to_string());
 
     let metrics = Arc::new(MetricsStore::new());
     let auth = Arc::new(AuthConfig::from_env());

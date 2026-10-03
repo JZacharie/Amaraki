@@ -18,6 +18,8 @@ pub struct AgentConfigMapData {
     pub max_iterations: Option<u32>,
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +126,11 @@ pub async fn get_agent_config(
                         }
                     }
                     let prompt_txt = data.get("prompt.txt").cloned();
+                    let skills = val.get("skills").and_then(|s| s.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    });
                     return Ok(Some(AgentConfigMapData {
                         name: agent_name.to_string(),
                         description: Some("Agent OpenCode Section 9".to_string()),
@@ -136,6 +143,7 @@ pub async fn get_agent_config(
                         },
                         max_iterations: Some(5),
                         env: std::collections::HashMap::new(),
+                        skills,
                     }));
                 }
             }
@@ -184,6 +192,7 @@ pub async fn discover_all_agents(
                     config.mcp_servers,
                     config.max_iterations,
                     config.env,
+                    config.skills,
                 )
                 .await;
             count += 1;
@@ -255,6 +264,12 @@ pub async fn spawn_agent_job(
     if let Some(cfg) = &maybe_config {
         for (k, v) in &cfg.env {
             env_list.push(json!({ "name": k, "value": v }));
+        }
+
+        if let Some(skills) = &cfg.skills {
+            if !skills.is_empty() {
+                env_list.push(json!({ "name": "AGENT_SKILLS", "value": skills.join(" ") }));
+            }
         }
 
         let mut opencode_config = json!({
@@ -393,6 +408,24 @@ echo "==========================================================================
 mkdir -p ~/.config/opencode
 if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then
   printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.jsonc
+fi
+
+if [ -n "$AGENT_SKILLS" ]; then
+  TS_SKILL=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "[$TS_SKILL] [SKILLS_INIT] 🧩 Import des skills spécifiés ($AGENT_SKILLS)..."
+  mkdir -p ~/.agents/skills ~/.config/opencode/skills
+  for skill in $AGENT_SKILLS; do
+    case "$skill" in
+      findskill)
+        target_skill="find-skills"
+        ;;
+      *)
+        target_skill="$skill"
+        ;;
+    esac
+    echo "[$TS_SKILL] [SKILLS_INSTALL] Installation du skill via skills.sh : $target_skill"
+    npx -y skills add "$target_skill" -y -g 2>&1 || npx -y skills add "$target_skill" -y 2>&1 || echo "⚠️ Avertissement : échec de l'import du skill $target_skill"
+  done
 fi
 
 TS_RUN=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -695,6 +728,7 @@ Analyser les pull requests et le code source, vérifier le respect des bonnes pr
             None,
             Some(5),
             std::collections::HashMap::new(),
+            Some(vec!["find-skills".to_string()]),
         )
         .await;
 
@@ -784,6 +818,7 @@ Tu disposes d'outils MCP pour interagir avec Gmail et Buzz :
             Some(mail_mcp),
             Some(10),
             mail_env,
+            None,
         )
         .await;
 
@@ -816,6 +851,42 @@ Tu es l'assistant de Joseph ZACHARIE dédié à la gestion des courses et du pan
             Some(leclerc_mcp),
             Some(5),
             std::collections::HashMap::new(),
+            None,
         )
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agent_config_deserialization_with_skills() {
+        let json_raw = r#"{
+            "name": "agent-code-reviewer",
+            "description": "Analyse le code",
+            "model": "opencode/free-default-model",
+            "system_prompt": "Prompt",
+            "skills": ["find-skills", "vercel-labs/skills@find-skills"]
+        }"#;
+
+        let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        assert_eq!(config.name, "agent-code-reviewer");
+        let skills = config.skills.expect("skills should be present");
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0], "find-skills");
+        assert_eq!(skills[1], "vercel-labs/skills@find-skills");
+    }
+
+    #[test]
+    fn test_agent_config_deserialization_without_skills() {
+        let json_raw = r#"{
+            "name": "agent-simple",
+            "description": "Simple agent"
+        }"#;
+
+        let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        assert_eq!(config.name, "agent-simple");
+        assert!(config.skills.is_none());
+    }
 }

@@ -46,6 +46,8 @@ pub struct AgentStats {
     pub max_iterations: Option<u32>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
 }
 
 impl AgentStats {
@@ -70,6 +72,7 @@ impl AgentStats {
             mcp_servers: None,
             max_iterations: None,
             env: HashMap::new(),
+            skills: None,
         }
     }
 
@@ -196,6 +199,7 @@ impl MetricsStore {
             None,
             None,
             HashMap::new(),
+            None,
         )
         .await;
     }
@@ -211,6 +215,7 @@ impl MetricsStore {
         mcp_servers: Option<Vec<crate::k8s::McpServerConfig>>,
         max_iterations: Option<u32>,
         env: HashMap<String, String>,
+        skills: Option<Vec<String>>,
     ) {
         let mut agents = self.agent_stats.write().await;
         let entry = agents.entry(name.to_string()).or_insert_with(|| {
@@ -230,6 +235,7 @@ impl MetricsStore {
         entry.mcp_servers = mcp_servers;
         entry.max_iterations = max_iterations;
         entry.env = env;
+        entry.skills = skills;
 
         for tool in &tools {
             if !entry.tools_exposed.contains(tool) {

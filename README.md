@@ -114,7 +114,7 @@ Runs `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, and op
 | `PORT` / `ARAMAKI_PORT` | `3000` | HTTP listen port |
 | `ARAMAKI_HOST` | `0.0.0.0` | HTTP listen host |
 | `POD_NAMESPACE` | `aramaki` | Kubernetes namespace |
-| `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode-agent:latest` | Docker image used for K8s Jobs |
+| `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode:latest` | Docker image used for K8s Jobs |
 | `SLACK_BOT_TOKEN` | *(none)* | Slack bot token (`xoxb-…`) |
 | `WHISPER_URL` | `http://speaches.speaches.svc.cluster.local:8000/v1/audio/transcriptions` | Whisper ASR endpoint |
 | `ARAMAKI_AUTH_USER` | `admin` | Dashboard login username |
@@ -150,11 +150,22 @@ Agents are declared as **ConfigMaps** in the target namespace. Each ConfigMap mu
   "description": "Reviews code and proposes architectural improvements",
   "model": "openai/gpt-4o",
   "system_prompt": "You are an expert code reviewer...",
-  "mcp_servers": [],
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+    }
+  ],
   "max_iterations": 10,
-  "env": {}
+  "env": {},
+  "skills": [
+    "find-skills"
+  ]
 }
 ```
+
+Skills are automatically installed at job startup via `npx -y skills add <skill> -y -g` (from [skills.sh](https://skills.sh)). The job image includes Python 3, Node.js LTS, and uv to execute local MCP servers.
 
 At startup, Aramaki discovers all ConfigMaps in the namespace and registers the agents. If none are found, default built-in agents are seeded.
 
@@ -295,7 +306,7 @@ Exécute `cargo fmt`, `cargo check`, `cargo clippy`, `cargo build --release`, et
 | `PORT` / `ARAMAKI_PORT` | `3000` | Port d'écoute HTTP |
 | `ARAMAKI_HOST` | `0.0.0.0` | Hôte d'écoute HTTP |
 | `POD_NAMESPACE` | `aramaki` | Namespace Kubernetes |
-| `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode-agent:latest` | Image Docker des Jobs K8s |
+| `AGENT_RUNNER_IMAGE` | `ghcr.io/jzacharie/opencode:latest` | Image Docker des Jobs K8s |
 | `SLACK_BOT_TOKEN` | *(aucun)* | Token du bot Slack (`xoxb-…`) |
 | `WHISPER_URL` | `http://speaches.speaches.svc.cluster.local:8000/v1/audio/transcriptions` | Endpoint ASR Whisper |
 | `ARAMAKI_AUTH_USER` | `admin` | Identifiant de connexion au dashboard |
@@ -331,11 +342,22 @@ Les agents sont déclarés comme des **ConfigMaps** dans le namespace cible. Cha
   "description": "Effectue des revues de code et propose des améliorations architecturales",
   "model": "openai/gpt-4o",
   "system_prompt": "Tu es un expert en revue de code...",
-  "mcp_servers": [],
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+    }
+  ],
   "max_iterations": 10,
-  "env": {}
+  "env": {},
+  "skills": [
+    "find-skills"
+  ]
 }
 ```
+
+Les skills sont automatiquement importés au démarrage du job via `npx -y skills add <skill> -y -g` (catalogue [skills.sh](https://skills.sh)). L'image opencode embarque Python 3, Node.js LTS, et uv pour lancer tous les serveurs MCP locaux.
 
 Au démarrage, Aramaki découvre tous les ConfigMaps du namespace et enregistre les agents. Si aucun n'est trouvé, des agents intégrés par défaut sont chargés.
 
