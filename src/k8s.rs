@@ -274,8 +274,34 @@ pub async fn spawn_agent_job(
         }
 
         let mut opencode_config = json!({
-            "$schema": "https://opencode.ai/config.json"
+            "$schema": "https://opencode.ai/config.json",
+            "model": &model
         });
+
+        // Détection et injection automatique du provider llama-cpp
+        if model.starts_with("llama-cpp/") {
+            let model_id = model.trim_start_matches("llama-cpp/");
+            let llama_key = std::env::var("LLAMA_API_KEY")
+                .unwrap_or_else(|_| "sk-llama-58d56f25431a5fb0b0ad47610f2e5582c6a17d036d707c97".to_string());
+            let llama_url = std::env::var("LLAMA_BASE_URL")
+                .unwrap_or_else(|_| "http://llama-cpp.llama-cpp.svc:8080/v1".to_string());
+
+            opencode_config["provider"] = json!({
+                "llama-cpp": {
+                    "name": "Llama-CPP",
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": llama_url,
+                        "apiKey": llama_key
+                    },
+                    "models": {
+                        model_id: {
+                            "name": model_id
+                        }
+                    }
+                }
+            });
+        }
 
         if let Some(prompt) = &cfg.system_prompt {
             opencode_config["instructions"] = json!([prompt]);
@@ -409,6 +435,7 @@ echo "==========================================================================
 mkdir -p ~/.config/opencode
 if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then
   printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.jsonc
+  printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.json
 fi
 
 if [ -n "$AGENT_SKILLS" ]; then
@@ -433,7 +460,11 @@ TS_RUN=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 echo "[$TS_RUN] [AGENT_EXEC] ⚡ Exécution d'OpenCode en cours..."
 
 # Exécution de l'agent et capture du code retour
-opencode run "$USER_PROMPT"
+if [ -n "$AGENT_MODEL" ]; then
+  opencode run -m "$AGENT_MODEL" "$USER_PROMPT" || opencode run "$USER_PROMPT"
+else
+  opencode run "$USER_PROMPT"
+fi
 EXIT_CODE=$?
 
 SEC_END=$(date +%s)
