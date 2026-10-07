@@ -223,6 +223,11 @@ impl GatekeeperStore {
                 .to_string();
             return (agent, summary);
         }
+        if lower.contains("opencode-deezer") || lower.contains("deezer-agent") {
+            let agent = "opencode-deezer".to_string();
+            let summary = "consulter les playlists Deezer synchronisées par M-Pacer et préparer leur transfert USB".to_string();
+            return (agent, summary);
+        }
         if lower.contains("agent-code-reviewer") || lower.contains("code-reviewer") {
             let agent = "agent-code-reviewer".to_string();
             let summary =
@@ -271,6 +276,25 @@ impl GatekeeperStore {
         {
             let agent = "opencode-mail".to_string();
             let summary = "consulter la boîte Gmail de Joseph ZACHARIE, filtrer les urgences depuis la veille 18h et produire une synthèse concise".to_string();
+            return (agent, summary);
+        }
+
+        // 3. Musique, Deezer & M-Pacer
+        if lower.contains("deezer")
+            || lower.contains("mpacer")
+            || lower.contains("musique")
+            || lower.contains("music")
+            || lower.contains("playlist")
+            || lower.contains("mp3")
+            || lower.contains("album")
+            || lower.contains("morceau")
+            || lower.contains("chanson")
+            || lower.contains("artiste")
+            || lower.contains("écouter")
+            || lower.contains("ecouter")
+        {
+            let agent = "opencode-deezer".to_string();
+            let summary = "consulter les playlists Deezer de Joseph via M-Pacer, en détailler le contenu et préparer la copie MP3 par USB".to_string();
             return (agent, summary);
         }
 
@@ -562,5 +586,16 @@ mod tests {
 
         let (agent, _) = GatekeeperStore::analyze_intent("fais une review du code de la PR");
         assert_eq!(agent, "agent-code-reviewer");
+
+        // Deezer / musique (M-Pacer)
+        let (agent, _) = GatekeeperStore::analyze_intent("opencode-deezer: liste mes playlists");
+        assert_eq!(agent, "opencode-deezer");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("ajoute cette playlist Deezer");
+        assert_eq!(agent, "opencode-deezer");
+
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("prépare la musique pour le transfert USB");
+        assert_eq!(agent, "opencode-deezer");
     }
 }
