@@ -31,6 +31,12 @@ pub struct McpServerConfig {
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Délai maximal (en millisecondes) accordé par OpenCode pour charger les
+    /// outils du serveur MCP. Indispensable pour les serveurs locaux
+    /// (`npx`/`uvx`) : leur premier démarrage à froid dépasse le délai par
+    /// défaut d'OpenCode (5000 ms) — mesuré à ~8 s pour le serveur filesystem.
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 pub async fn check_agent_configmap_exists(
@@ -116,12 +122,14 @@ pub async fn get_agent_config(
                                         .collect()
                                 })
                                 .unwrap_or_default();
+                            let timeout = s_val.get("timeout").and_then(|t| t.as_u64());
                             mcp_servers.push(McpServerConfig {
                                 name: s_name.clone(),
                                 server_type: s_type,
                                 url,
                                 command,
                                 args,
+                                timeout,
                             });
                         }
                     }
@@ -374,32 +382,7 @@ pub async fn spawn_agent_job(
         }
 
         if let Some(servers) = &cfg.mcp_servers {
-            let mut mcp_map = serde_json::Map::new();
-            for s in servers {
-                if let Some(ref url) = s.url {
-                    mcp_map.insert(
-                        s.name.clone(),
-                        json!({
-                            "type": "remote",
-                            "url": url
-                        }),
-                    );
-                } else {
-                    let mut cmd = Vec::new();
-                    if let Some(c) = &s.command {
-                        cmd.push(c.clone());
-                    }
-                    cmd.extend(s.args.clone());
-                    mcp_map.insert(
-                        s.name.clone(),
-                        json!({
-                            "type": "local",
-                            "command": cmd
-                        }),
-                    );
-                }
-            }
-            opencode_config["mcp"] = serde_json::Value::Object(mcp_map);
+            opencode_config["mcp"] = build_opencode_mcp_config(servers);
         }
 
         if let Ok(config_str) = serde_json::to_string(&opencode_config) {
@@ -506,6 +489,14 @@ mkdir -p ~/.config/opencode
 if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then
   printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.jsonc
   printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.json
+fi
+
+# Espace de travail des serveurs MCP locaux (filesystem/git). L'image runner
+# fournit /home/developer mais pas ce dossier : le serveur MCP filesystem refuse
+# de demarrer si la racine declaree en argument n'existe pas.
+mkdir -p "$HOME/workspace"
+if command -v git >/dev/null 2>&1 && [ ! -d "$HOME/workspace/.git" ]; then
+  git init -q "$HOME/workspace" >/dev/null 2>&1 || true
 fi
 
 if [ -n "$AGENT_SKILLS" ]; then
@@ -645,6 +636,81 @@ pub async fn sync_jobs(
     Ok(())
 }
 
+/// Construit la section `mcp` du fichier `opencode.json` transmis au Pod de
+/// l'agent (`OPENCODE_CONFIG_CONTENT`).
+///
+/// Un serveur est distant dès qu'il déclare une `url`, local sinon. Le champ
+/// `timeout` est propagé tel quel : sans lui, OpenCode applique son défaut de
+/// 5000 ms, insuffisant pour un serveur local à froid (npx/uvx).
+pub fn build_opencode_mcp_config(servers: &[McpServerConfig]) -> serde_json::Value {
+    let mut mcp_map = serde_json::Map::new();
+
+    for s in servers {
+        let mut entry = if let Some(ref url) = s.url {
+            json!({
+                "type": "remote",
+                "url": url
+            })
+        } else {
+            let mut cmd = Vec::new();
+            if let Some(c) = &s.command {
+                cmd.push(c.clone());
+            }
+            cmd.extend(s.args.clone());
+            json!({
+                "type": "local",
+                "command": cmd
+            })
+        };
+
+        if let Some(timeout) = s.timeout {
+            entry["timeout"] = json!(timeout);
+        }
+
+        mcp_map.insert(s.name.clone(), entry);
+    }
+
+    serde_json::Value::Object(mcp_map)
+}
+
+/// Contrôles statiques d'une déclaration de serveur MCP, sans contact avec le
+/// cluster : URL malformée ou serveur local sans commande.
+///
+/// Cette fonction ne prétend **pas** vérifier que le paquet ou le binaire existe :
+/// l'image runner (`AGENT_RUNNER_IMAGE`) embarque Node.js LTS (`node`/`npx`),
+/// `uv`/`uvx` et Python 3 (voir `helmscharts/images/opencode/Dockerfile`), donc un
+/// serveur MCP local lancé via `npx` ou `uvx` est une configuration légitime.
+pub fn validate_mcp_server_config(server: &McpServerConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    match server.url.as_deref() {
+        Some(url) => {
+            let trimmed = url.trim();
+            if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+                warnings.push(format!(
+                    "Serveur MCP `{}` : URL invalide `{}` (préfixe http:// ou https:// attendu).",
+                    server.name, url
+                ));
+            }
+        }
+        None => {
+            let has_command = server
+                .command
+                .as_deref()
+                .map(|c| !c.trim().is_empty())
+                .unwrap_or(false);
+            if !has_command {
+                warnings.push(format!(
+                    "Serveur MCP `{}` : configuration locale invalide (ni `url` ni `command`).",
+                    server.name
+                ));
+            }
+        }
+    }
+
+    warnings
+}
+
 pub async fn check_agent_mcp_readiness(
     client: &kube::Client,
     ns: &str,
@@ -654,9 +720,12 @@ pub async fn check_agent_mcp_readiness(
     if let Ok(Some(cfg)) = get_agent_config(client, ns, agent_name).await {
         if let Some(servers) = cfg.mcp_servers {
             for s in servers {
+                // 1. Contrôles statiques (URL malformée / commande locale absente)
+                warnings.extend(validate_mcp_server_config(&s));
+
                 if let Some(ref url) = s.url {
-                    // Vérifier si l'URL est interne au cluster (ex: .svc.cluster.local)
-                    if url.contains(".svc.cluster.local") {
+                    // 2. Vérifier si l'URL est interne au cluster (ex: .svc.cluster.local)
+                    if url.contains(".svc.cluster.local") && url.starts_with("http") {
                         // Extraction du host (sans protocole, sans chemin, sans port)
                         let after_proto = url.split("://").nth(1).unwrap_or(url);
                         let host_and_port = after_proto.split('/').next().unwrap_or(after_proto);
@@ -725,8 +794,6 @@ pub async fn check_agent_mcp_readiness(
                             }
                         }
                     }
-                } else if s.command.as_deref() == Some("npx") {
-                    warnings.push(format!("MCP `{}` configuré avec `npx` (exécution locale), mais l'environnement conteneur ne dispose pas de node/npx. Une URL distante K8s est requise.", s.name));
                 }
             }
         }
@@ -884,25 +951,18 @@ Analyser les pull requests et le code source, vérifier le respect des bonnes pr
     let mut mail_env = std::collections::HashMap::new();
     mail_env.insert("GMAIL_LOGIN".to_string(), "joseph@zacharie.org".to_string());
 
-    let mail_mcp = vec![
-        McpServerConfig {
-            name: "gmail".to_string(),
-            server_type: Some("local".to_string()),
-            url: None,
-            command: Some("npx".to_string()),
-            args: vec![
-                "-y".to_string(),
-                "@modelcontextprotocol/server-gmail".to_string(),
-            ],
-        },
-        McpServerConfig {
-            name: "buzz".to_string(),
-            server_type: Some("remote".to_string()),
-            url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
-            command: None,
-            args: vec![],
-        },
-    ];
+    // Note : il n'existe pas de paquet npm `@modelcontextprotocol/server-gmail`
+    // (404 sur le registre). La boîte Gmail est lue via IMAP/SMTP par les outils
+    // natifs de l'agent (variables `$GMAIL_LOGIN` / `$SMTP_PASSWORD`), et le seul
+    // serveur MCP déclaré ici est le relais Buzz, vérifié opérationnel (/sse = 200).
+    let mail_mcp = vec![McpServerConfig {
+        name: "buzz".to_string(),
+        server_type: Some("remote".to_string()),
+        url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
+        command: None,
+        args: vec![],
+        timeout: Some(30000),
+    }];
 
     let mail_prompt = r#"# Agent « Urgences mails »
 
@@ -932,19 +992,19 @@ Te connecter à la boîte mail à l'aide de ces variables d'environnement, lire 
 4. Génère la synthèse : les éléments 🔴 en premier (une ligne par message, action et délai).
 5. Termine par le volume total analysé, l'heure d'exécution, et la mention « Rien d'autre ne bloque » ou la liste concise des éléments 🟠.
 
-# OUTILS DISPONIBLES (MCP)
-Tu disposes d'outils MCP pour interagir avec Gmail et Buzz :
-- gmail_list_unread : lister les derniers emails non lus avec sujet, expéditeur et date.
-- gmail_read_email : lire le contenu complet d'un email via son message_id.
-- gmail_search : rechercher des emails spécifiques.
-- buzz-dev-mcp : outils de buzz pour interagir avec le relai, les messages et canaux."#;
+# OUTILS DISPONIBLES
+- Lecture Gmail : via IMAP/SMTP avec les variables d'environnement `$GMAIL_LOGIN` et `$SMTP_PASSWORD` (outils natifs de l'agent).
+- Serveur MCP Buzz (`buzz`) :
+  - buzz_post_message : poster un message sur un canal Buzz ou un fil public.
+  - buzz_read_channel : lire les derniers messages des canaux Buzz.
+  - buzz_get_status : vérifier l'état du relais Buzz."#;
 
     metrics
         .register_agent_full(
             "opencode-mail",
             "opencode/mimo-v2.5-free",
             "Assistant personnel de Joseph ZACHARIE pour le tri et la synthèse des urgences mails (Gmail & Buzz)",
-            vec!["gmail".to_string(), "buzz-dev-mcp".to_string()],
+            vec!["buzz".to_string()],
             Some(mail_prompt.to_string()),
             Some(mail_mcp),
             Some(10),
@@ -967,9 +1027,10 @@ Tu es l'assistant de Joseph ZACHARIE dédié à la gestion des courses et du pan
     let leclerc_mcp = vec![McpServerConfig {
         name: "leclerc-drive".to_string(),
         server_type: Some("remote".to_string()),
-        url: Some("http://leclerc-drive-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
+        url: Some("http://leclerc-mcp.leclerc-mcp.svc.cluster.local:8080/sse".to_string()),
         command: None,
         args: vec![],
+        timeout: Some(30000),
     }];
 
     metrics
@@ -1068,5 +1129,124 @@ mod tests {
             Some(value) => std::env::set_var("AGENT_NODE_SELECTOR", value),
             None => std::env::remove_var("AGENT_NODE_SELECTOR"),
         }
+    }
+
+    #[test]
+    fn test_validate_mcp_server_config_accepts_local_npx_server() {
+        // L'image runner embarque node/npx : un serveur MCP local en npx est valide.
+        let server = McpServerConfig {
+            name: "filesystem".to_string(),
+            server_type: Some("local".to_string()),
+            url: None,
+            command: Some("npx".to_string()),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-filesystem".to_string(),
+                "/home/developer/workspace".to_string(),
+            ],
+            timeout: Some(60000),
+        };
+        assert!(validate_mcp_server_config(&server).is_empty());
+    }
+
+    #[test]
+    fn test_validate_mcp_server_config_accepts_uvx_server() {
+        let server = McpServerConfig {
+            name: "git".to_string(),
+            server_type: Some("local".to_string()),
+            url: None,
+            command: Some("uvx".to_string()),
+            args: vec![
+                "mcp-server-git".to_string(),
+                "--repository".to_string(),
+                "/home/developer/workspace".to_string(),
+            ],
+            timeout: Some(60000),
+        };
+        assert!(validate_mcp_server_config(&server).is_empty());
+    }
+
+    #[test]
+    fn test_validate_mcp_server_config_flags_local_without_command() {
+        let server = McpServerConfig {
+            name: "broken".to_string(),
+            server_type: None,
+            url: None,
+            command: None,
+            args: vec![],
+            timeout: None,
+        };
+        let warnings = validate_mcp_server_config(&server);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("broken"));
+        assert!(warnings[0].contains("configuration locale invalide"));
+    }
+
+    #[test]
+    fn test_validate_mcp_server_config_flags_malformed_url() {
+        let server = McpServerConfig {
+            name: "leclerc".to_string(),
+            server_type: Some("remote".to_string()),
+            url: Some("leclerc-mcp.leclerc-mcp.svc.cluster.local:8080/sse".to_string()),
+            command: None,
+            args: vec![],
+            timeout: None,
+        };
+        let warnings = validate_mcp_server_config(&server);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("URL invalide"));
+    }
+
+    #[test]
+    fn test_validate_mcp_server_config_accepts_cluster_remote_url() {
+        let server = McpServerConfig {
+            name: "buzz".to_string(),
+            server_type: Some("remote".to_string()),
+            url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
+            command: None,
+            args: vec![],
+            timeout: None,
+        };
+        assert!(validate_mcp_server_config(&server).is_empty());
+    }
+
+    #[test]
+    fn test_build_opencode_mcp_config_local_with_timeout() {
+        let servers = vec![McpServerConfig {
+            name: "filesystem".to_string(),
+            server_type: Some("local".to_string()),
+            url: None,
+            command: Some("npx".to_string()),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-filesystem".to_string(),
+                "/home/developer/workspace".to_string(),
+            ],
+            timeout: Some(60000),
+        }];
+        let mcp = build_opencode_mcp_config(&servers);
+        assert_eq!(mcp["filesystem"]["type"], "local");
+        assert_eq!(mcp["filesystem"]["command"][0], "npx");
+        assert_eq!(mcp["filesystem"]["command"][3], "/home/developer/workspace");
+        assert_eq!(mcp["filesystem"]["timeout"], 60000);
+    }
+
+    #[test]
+    fn test_build_opencode_mcp_config_remote_without_timeout() {
+        let servers = vec![McpServerConfig {
+            name: "buzz".to_string(),
+            server_type: Some("remote".to_string()),
+            url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
+            command: None,
+            args: vec![],
+            timeout: None,
+        }];
+        let mcp = build_opencode_mcp_config(&servers);
+        assert_eq!(mcp["buzz"]["type"], "remote");
+        assert_eq!(
+            mcp["buzz"]["url"],
+            "http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse"
+        );
+        assert!(mcp["buzz"].get("timeout").is_none());
     }
 }

@@ -164,7 +164,7 @@ Agents are declared as **ConfigMaps** in the target namespace (e.g. `amaraki`). 
     {
       "name": "filesystem",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/developer/workspace"]
     }
   ],
   "max_iterations": 10,
@@ -176,6 +176,8 @@ Agents are declared as **ConfigMaps** in the target namespace (e.g. `amaraki`). 
 ```
 
 Skills are automatically installed at job startup via `npx -y skills add <skill> -y -g` (from [skills.sh](https://skills.sh)). The job image includes Python 3, Node.js LTS, and uv to execute local MCP servers.
+
+Local MCP servers run inside the agent Pod as user `developer` (uid 1000): their working directory is `/home/developer/workspace`, which the Job bootstrap creates (and initialises as a Git repository) before OpenCode starts. Use it as the root of `filesystem`/`git` MCP servers; a root that does not exist makes the MCP server exit at startup.
 
 At startup, Amaraki discovers all ConfigMaps in the namespace and registers the agents. If none are found, default built-in agents are seeded.
 
@@ -366,7 +368,7 @@ Les agents sont déclarés comme des **ConfigMaps** dans le namespace cible (`am
     {
       "name": "filesystem",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/developer/workspace"]
     }
   ],
   "max_iterations": 10,
@@ -378,6 +380,8 @@ Les agents sont déclarés comme des **ConfigMaps** dans le namespace cible (`am
 ```
 
 Les skills sont automatiquement importés au démarrage du job via `npx -y skills add <skill> -y -g` (catalogue [skills.sh](https://skills.sh)). L'image opencode embarque Python 3, Node.js LTS, et uv pour lancer tous les serveurs MCP locaux.
+
+Les serveurs MCP locaux s'exécutent dans le Pod de l'agent sous l'utilisateur `developer` (uid 1000) : leur répertoire de travail est `/home/developer/workspace`, créé (et initialisé en dépôt Git) par le script de démarrage du Job avant le lancement d'OpenCode. Utilisez ce chemin comme racine des serveurs MCP `filesystem`/`git` : une racine inexistante fait échouer le démarrage du serveur MCP.
 
 Au démarrage, Amaraki découvre tous les ConfigMaps du namespace et enregistre les agents. Si aucun n'est trouvé, des agents intégrés par défaut sont chargés.
 
