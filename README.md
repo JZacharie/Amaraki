@@ -65,6 +65,7 @@ Key components:
 - 🤖 **Smart routing** — Detects intent keywords and routes to the right agent
 - 💬 **Joe's #ai Channel Bridge** — Automatically intercepts messages from Joe on `#ai` and routes instructions to agents
 - 📦 **Skills import** — Installs dynamic skills from [skills.sh](https://skills.sh) (e.g. `find-skills`) at agent launch
+- 📚 **Git Repos & Memory** — Dynamic Git repository sync per agent (pull instructions, shared skills, local playbooks, auto-commit & push memories/powers at completion)
 - 🛠️ **Local & Remote MCP** — Runner image includes Node.js LTS, uv, and Python 3 to run local MCP servers
 - ✅ **Human-in-the-loop** — Asks for confirmation before launching a job (or direct execution for designated command channels)
 - 🔄 **K8s native** — Agents are declared as ConfigMaps, executed as K8s Jobs
@@ -269,6 +270,7 @@ Composants principaux :
 - 🤖 **Routage intelligent** — Détection des mots-clés d'intention et sélection de l'agent approprié
 - 💬 **Pilotage canal #ai** — Interception automatique des messages de Joe sur le canal `#ai` pour piloter les agents
 - 📦 **Import de skills** — Téléchargement dynamique de compétences depuis [skills.sh](https://skills.sh) (ex. `find-skills`)
+- 📚 **Dépôts Git & Mémoire persistante** — Synchronisation multi-repos par agent (pouvoirs, compétences partagées, playbooks, auto-commit & push des apprentissages en fin d'exécution)
 - 🛠️ **MCP locaux et distants** — Image runner intégrant Node.js LTS, uv et Python 3 pour exécuter les serveurs MCP
 - ✅ **Validation humaine** — Demande systématique de confirmation avant le lancement d'un job
 - 🔄 **K8s natif** — Les agents sont déclarés comme ConfigMaps, exécutés comme des Jobs K8s

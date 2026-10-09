@@ -48,6 +48,8 @@ pub struct AgentStats {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub skills: Option<Vec<String>>,
+    #[serde(default)]
+    pub git_repos: Option<Vec<crate::k8s::AgentGitRepo>>,
 }
 
 impl AgentStats {
@@ -73,6 +75,7 @@ impl AgentStats {
             max_iterations: None,
             env: HashMap::new(),
             skills: None,
+            git_repos: None,
         }
     }
 
@@ -200,6 +203,7 @@ impl MetricsStore {
             None,
             HashMap::new(),
             None,
+            None,
         )
         .await;
     }
@@ -216,6 +220,7 @@ impl MetricsStore {
         max_iterations: Option<u32>,
         env: HashMap<String, String>,
         skills: Option<Vec<String>>,
+        git_repos: Option<Vec<crate::k8s::AgentGitRepo>>,
     ) {
         let mut agents = self.agent_stats.write().await;
         let entry = agents.entry(name.to_string()).or_insert_with(|| {
@@ -236,6 +241,7 @@ impl MetricsStore {
         entry.max_iterations = max_iterations;
         entry.env = env;
         entry.skills = skills;
+        entry.git_repos = git_repos;
 
         for tool in &tools {
             if !entry.tools_exposed.contains(tool) {

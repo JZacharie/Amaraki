@@ -8,6 +8,23 @@ use serde_json::json;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentGitRepo {
+    pub url: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub writable: Option<bool>,
+    #[serde(default)]
+    pub secret_ref: Option<String>,
+    #[serde(default)]
+    pub token_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfigMapData {
     pub name: String,
     pub description: Option<String>,
@@ -20,6 +37,8 @@ pub struct AgentConfigMapData {
     pub env: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub skills: Option<Vec<String>>,
+    #[serde(default)]
+    pub git_repos: Option<Vec<AgentGitRepo>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +171,7 @@ pub async fn get_agent_config(
                         max_iterations: Some(5),
                         env: std::collections::HashMap::new(),
                         skills,
+                        git_repos: None,
                     }));
                 }
             }
@@ -201,6 +221,7 @@ pub async fn discover_all_agents(
                     config.max_iterations,
                     config.env,
                     config.skills,
+                    config.git_repos,
                 )
                 .await;
             count += 1;
@@ -388,9 +409,17 @@ pub async fn spawn_agent_job(
         if let Ok(config_str) = serde_json::to_string(&opencode_config) {
             env_list.push(json!({ "name": "OPENCODE_CONFIG_CONTENT", "value": config_str }));
         }
+
+        if let Some(repos) = &cfg.git_repos {
+            if !repos.is_empty() {
+                if let Ok(repos_str) = serde_json::to_string(repos) {
+                    env_list.push(json!({ "name": "AGENT_GIT_REPOS", "value": repos_str }));
+                }
+            }
+        }
     }
 
-    let env_from = vec![
+    let mut env_from = vec![
         json!({
             "secretRef": {
                 "name": format!("{}-secret", safe_agent_name),
@@ -404,6 +433,23 @@ pub async fn spawn_agent_job(
             }
         }),
     ];
+
+    if let Some(cfg) = &maybe_config {
+        if let Some(repos) = &cfg.git_repos {
+            for repo in repos {
+                if let Some(ref sec_name) = repo.secret_ref {
+                    if !sec_name.is_empty() {
+                        env_from.push(json!({
+                            "secretRef": {
+                                "name": sec_name,
+                                "optional": true
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+    }
 
     // Determine configMap volume name to mount
     let configmap_vol_name = if check_agent_configmap_exists(client, ns, agent_name)
@@ -499,6 +545,81 @@ if command -v git >/dev/null 2>&1 && [ ! -d "$HOME/workspace/.git" ]; then
   git init -q "$HOME/workspace" >/dev/null 2>&1 || true
 fi
 
+# Configuration d'identité Git par défaut pour les commits automatiques
+git config --global user.name "Amaraki Agent [${AGENT_NAME:-section9}]" >/dev/null 2>&1 || true
+git config --global user.email "amaraki@zacharie.org" >/dev/null 2>&1 || true
+
+# Gestion des dépôts Git (Mémoire, Skills, Configuration MCP, Playbooks)
+if [ -n "$AGENT_GIT_REPOS" ]; then
+  TS_GIT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "[$TS_GIT] [GIT_REPOS_INIT] 📂 Initialisation des dépôts Git configurés..."
+
+  python3 -c "
+import os, json, subprocess, shutil
+
+raw = os.environ.get('AGENT_GIT_REPOS', '[]')
+try:
+    repos = json.loads(raw)
+except Exception as e:
+    print(f'Erreur décodage AGENT_GIT_REPOS: {e}')
+    repos = []
+
+workspace = os.path.expanduser('~/workspace')
+home = os.path.expanduser('~')
+
+for r in repos:
+    url = r.get('url', '')
+    if not url:
+        continue
+    name = r.get('name') or url.rstrip('/').split('/')[-1].replace('.git', '')
+    branch = r.get('branch') or 'main'
+    rel_path = r.get('path') or name
+    target_dir = os.path.join(workspace, rel_path)
+    token_key = r.get('token_key') or 'GITHUB_TOKEN'
+    token = os.environ.get(token_key) or os.environ.get('GITHUB_TOKEN') or os.environ.get('GIT_TOKEN')
+
+    clone_url = url
+    if token and 'https://' in url and '@' not in url:
+        clone_url = url.replace('https://', f'https://x-access-token:{token}@')
+
+    print(f'==> Synchronisation du repo [{name}] (branche: {branch}) vers {target_dir}...')
+    if os.path.exists(target_dir) and os.path.exists(os.path.join(target_dir, '.git')):
+        subprocess.run(['git', 'fetch', 'origin'], cwd=target_dir, capture_output=True)
+        subprocess.run(['git', 'checkout', branch], cwd=target_dir, capture_output=True)
+        subprocess.run(['git', 'pull', '--rebase', 'origin', branch], cwd=target_dir, capture_output=True)
+    else:
+        os.makedirs(os.path.dirname(target_dir), exist_ok=True)
+        res = subprocess.run(['git', 'clone', '--branch', branch, '--depth', '1', clone_url, target_dir], capture_output=True, text=True)
+        if res.returncode != 0:
+            print(f'⚠️ Échec clone direct (branche {branch}) : {res.stderr.strip()}. Tentative clone standard...')
+            subprocess.run(['git', 'clone', clone_url, target_dir], capture_output=True)
+
+    if os.path.exists(target_dir):
+        # 1. Découverte de skills locaux dans le repo
+        skills_dir = os.path.join(target_dir, 'skills')
+        if not os.path.exists(skills_dir):
+            skills_dir = os.path.join(target_dir, '.agents', 'skills')
+        if os.path.exists(skills_dir) and os.path.isdir(skills_dir):
+            dest_skills = os.path.join(home, '.agents', 'skills')
+            os.makedirs(dest_skills, exist_ok=True)
+            for item in os.listdir(skills_dir):
+                s_src = os.path.join(skills_dir, item)
+                s_dst = os.path.join(dest_skills, item)
+                if not os.path.exists(s_dst):
+                    try:
+                        os.symlink(s_src, s_dst)
+                        print(f'  [SKILL] Lié avec succès : {item}')
+                    except Exception:
+                        shutil.copytree(s_src, s_dst, dirs_exist_ok=True)
+
+        # 2. Découverte d'instructions spécifiques au repo
+        for prompt_name in ['instructions.md', 'prompt.txt', 'system_prompt.md', 'powers.md']:
+            p_file = os.path.join(target_dir, prompt_name)
+            if os.path.exists(p_file):
+                print(f'  [DOC] Document de capacités trouvé : {p_file}')
+"
+fi
+
 if [ -n "$AGENT_SKILLS" ]; then
   TS_SKILL=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "[$TS_SKILL] [SKILLS_INIT] 🧩 Import des skills spécifiés ($AGENT_SKILLS)..."
@@ -527,6 +648,59 @@ else
   opencode run "$USER_PROMPT"
 fi
 EXIT_CODE=$?
+
+# Sauvegarde / Push des modifications (Mémoire & Pouvoirs) si configuré
+if [ -n "$AGENT_GIT_REPOS" ]; then
+  TS_PUSH=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "[$TS_PUSH] [GIT_PUSH_CHECK] 📤 Vérification des modifications pour les dépôts inscriptibles..."
+
+  python3 -c "
+import os, json, subprocess
+
+raw = os.environ.get('AGENT_GIT_REPOS', '[]')
+try:
+    repos = json.loads(raw)
+except Exception:
+    repos = []
+
+workspace = os.path.expanduser('~/workspace')
+job_id = os.environ.get('AMARAKI_JOB_ID') or os.environ.get('ARAMAKI_JOB_ID') or 'job-unknown'
+agent_name = os.environ.get('AGENT_NAME') or 'agent'
+
+for r in repos:
+    if not r.get('writable', False):
+        continue
+    name = r.get('name') or 'repo'
+    branch = r.get('branch') or 'main'
+    rel_path = r.get('path') or name
+    target_dir = os.path.join(workspace, rel_path)
+    if not os.path.exists(target_dir):
+        continue
+
+    status = subprocess.run(['git', 'status', '--porcelain'], cwd=target_dir, capture_output=True, text=True)
+    if status.stdout.strip():
+        print(f'==> Modifications détectées dans [{name}], commit et push en cours...')
+        subprocess.run(['git', 'add', '-A'], cwd=target_dir)
+        commit_msg = f'chore({agent_name}): update powers and memory [{job_id}]'
+        subprocess.run(['git', 'commit', '-m', commit_msg], cwd=target_dir)
+
+        # Assure l'URL avec token pour le push
+        token_key = r.get('token_key') or 'GITHUB_TOKEN'
+        token = os.environ.get(token_key) or os.environ.get('GITHUB_TOKEN') or os.environ.get('GIT_TOKEN')
+        url = r.get('url', '')
+        if token and 'https://' in url and '@' not in url:
+            push_url = url.replace('https://', f'https://x-access-token:{token}@')
+            subprocess.run(['git', 'remote', 'set-url', 'origin', push_url], cwd=target_dir)
+
+        push_res = subprocess.run(['git', 'push', 'origin', branch], cwd=target_dir, capture_output=True, text=True)
+        if push_res.returncode == 0:
+            print(f'✅ Succès du push vers {name} ({branch})')
+        else:
+            print(f'⚠️ Échec du push vers {name}: {push_res.stderr.strip()}')
+    else:
+        print(f'==> Aucune modification dans [{name}]')
+"
+fi
 
 SEC_END=$(date +%s)
 TS_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -927,6 +1101,7 @@ Analyser les pull requests et le code source, vérifier le respect des bonnes pr
             Some(5),
             std::collections::HashMap::new(),
             Some(vec!["find-skills".to_string()]),
+            None,
         )
         .await;
 
@@ -1010,6 +1185,7 @@ Te connecter à la boîte mail à l'aide de ces variables d'environnement, lire 
             Some(10),
             mail_env,
             None,
+            None,
         )
         .await;
 
@@ -1043,6 +1219,7 @@ Tu es l'assistant de Joseph ZACHARIE dédié à la gestion des courses et du pan
             Some(leclerc_mcp),
             Some(5),
             std::collections::HashMap::new(),
+            None,
             None,
         )
         .await;
@@ -1080,6 +1257,38 @@ mod tests {
         let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
         assert_eq!(config.name, "agent-simple");
         assert!(config.skills.is_none());
+        assert!(config.git_repos.is_none());
+    }
+
+    #[test]
+    fn test_agent_config_deserialization_with_git_repos() {
+        let json_raw = r#"{
+            "name": "agent-git-aware",
+            "description": "Agent with persistent git memory",
+            "git_repos": [
+                {
+                    "url": "https://github.com/jzacharie/agent-memory.git",
+                    "name": "memory",
+                    "branch": "main",
+                    "path": "memory",
+                    "writable": true,
+                    "secret_ref": "github-secret",
+                    "token_key": "GITHUB_TOKEN"
+                }
+            ]
+        }"#;
+
+        let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        assert_eq!(config.name, "agent-git-aware");
+        let repos = config.git_repos.expect("git_repos should be present");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].url, "https://github.com/jzacharie/agent-memory.git");
+        assert_eq!(repos[0].name.as_deref(), Some("memory"));
+        assert_eq!(repos[0].branch.as_deref(), Some("main"));
+        assert_eq!(repos[0].path.as_deref(), Some("memory"));
+        assert_eq!(repos[0].writable, Some(true));
+        assert_eq!(repos[0].secret_ref.as_deref(), Some("github-secret"));
+        assert_eq!(repos[0].token_key.as_deref(), Some("GITHUB_TOKEN"));
     }
 
     #[test]

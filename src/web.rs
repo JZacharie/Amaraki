@@ -1534,6 +1534,11 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             <div id="metaMcpServers" style="background:#030712; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:0.75rem; font-size:0.8rem;"></div>
           </div>
 
+          <div style="margin-bottom:1rem;">
+            <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted); margin-bottom:0.4rem;">📚 Dépôts Git (Mémoire, Compétences & Pouvoirs)</div>
+            <div id="metaGitRepos" style="background:#030712; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:0.75rem; font-size:0.8rem;"></div>
+          </div>
+
           <div>
             <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted); margin-bottom:0.4rem;">Variables d'environnement</div>
             <div id="metaEnvVars" class="mono" style="background:#030712; border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:0.75rem; font-size:0.75rem; color:#94a3b8; white-space:pre-wrap;"></div>
@@ -1958,7 +1963,9 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         mcp_servers: agent.mcp_servers || [],
         max_iterations: agent.max_iterations || 10,
         env: agent.env || {},
-        tools_exposed: agent.tools_exposed || []
+        tools_exposed: agent.tools_exposed || [],
+        skills: agent.skills || [],
+        git_repos: agent.git_repos || []
       };
 
       const jsonString = JSON.stringify(exportData, null, 2);
@@ -1988,6 +1995,23 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         mcpEl.textContent = 'Outils déclarés: ' + agent.tools_exposed.join(', ');
       } else {
         mcpEl.textContent = 'Aucun serveur MCP configuré.';
+      }
+
+      // Git Repos (Memory & Powers)
+      const gitEl = document.getElementById('metaGitRepos');
+      gitEl.replaceChildren();
+      if (agent.git_repos && agent.git_repos.length > 0) {
+        agent.git_repos.forEach(repo => {
+          const repoDiv = document.createElement('div');
+          repoDiv.style.marginBottom = '0.5rem';
+          const modeBadge = repo.writable ? '<span class="badge-pill badge-running" style="font-size:0.65rem; margin-left:0.4rem;">LECTURE / ÉCRITURE (PUSH)</span>' : '<span class="badge-pill" style="font-size:0.65rem; margin-left:0.4rem; background:rgba(255,255,255,0.08); color:var(--text-muted);">LECTURE SEULE</span>';
+          const branch = repo.branch || 'main';
+          const relPath = repo.path || repo.name || 'root';
+          repoDiv.innerHTML = '<div><strong style="color:var(--accent-cyan);">' + (repo.name || 'repo') + '</strong>' + modeBadge + '</div><div class="mono" style="font-size:0.75rem; color:#94a3b8; word-break:break-all;">' + repo.url + ' @ ' + branch + ' &rarr; /workspace/' + relPath + '</div>';
+          gitEl.appendChild(repoDiv);
+        });
+      } else {
+        gitEl.textContent = 'Aucun dépôt Git externe attaché (mémoire volatile).';
       }
 
       // Env vars
