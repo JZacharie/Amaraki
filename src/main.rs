@@ -7,19 +7,22 @@ use axum::{
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn, Instrument};
 
 mod auth;
 mod gatekeeper;
 mod k8s;
 mod metrics;
+mod otel;
 mod slack;
 mod web;
 
 use auth::{require_auth_middleware, AuthConfig};
 use gatekeeper::GatekeeperStore;
 use metrics::MetricsStore;
+use opentelemetry::trace::TracerProvider as _;
 use slack::SlackNotifier;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use web::WebState;
 
 #[derive(Clone)]
@@ -70,11 +73,20 @@ pub struct SlackFileDetail {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _otel_provider = otel::setup_otel();
+    let otel_tracer = _otel_provider.as_ref().map(|p| p.tracer("amaraki"));
+
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,amaraki=info".into());
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
+
+    let otel_layer = otel_tracer
+        .as_ref()
+        .map(|tracer| tracing_opentelemetry::layer().with_tracer(tracer.clone()));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(otel_layer)
         .init();
 
     info!("=== Démarrage d'Amaraki (Chief Section 9 Agent Orchestrator & Observability) ===");
@@ -314,11 +326,21 @@ async fn handle_slack_event(
                 event.channel, user_id, prompt_preview
             );
             let state_clone = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = process_agent_request(state_clone, event).await {
-                    error!("[ACTION] 💥 Erreur traitement agent: {:?}", e);
+            let channel_name = event.channel.clone();
+            let user_name = user_id.to_string();
+            tokio::spawn(
+                async move {
+                    if let Err(e) = process_agent_request(state_clone, event).await {
+                        error!("[ACTION] 💥 Erreur traitement agent: {:?}", e);
+                    }
                 }
-            });
+                .instrument(info_span!(
+                    "amaraki_agent_request",
+                    "slack.channel" = %channel_name,
+                    "slack.user" = %user_name,
+                    "prompt.preview" = %prompt_preview
+                )),
+            );
         }
     }
 
