@@ -241,6 +241,11 @@ impl GatekeeperStore {
                     .to_string();
             return (agent, summary);
         }
+        if lower.contains("opencode-openobserve") || lower.contains("openobserve") || lower.contains("open-observe") {
+            let agent = "opencode-openobserve".to_string();
+            let summary = "consulter et analyser les logs, métriques et traces sur OpenObserve".to_string();
+            return (agent, summary);
+        }
         if lower.contains("agent-incident-responder") || lower.contains("incident-responder") {
             let agent = "agent-incident-responder".to_string();
             let summary =
