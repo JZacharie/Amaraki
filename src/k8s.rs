@@ -377,7 +377,7 @@ pub async fn spawn_agent_job(
         if model.starts_with("llama-cpp/") {
             let model_id = model.trim_start_matches("llama-cpp/");
             let llama_key = std::env::var("LLAMA_API_KEY")
-                .unwrap_or_else(|_| "sk-llama-58d56f25431a5fb0b0ad47610f2e5582c6a17d036d707c97".to_string());
+                .unwrap_or_else(|_| "ENC[SYM256,salt:jLNxPjPQllmoiuDdP4Wfjw==,iv:baU1h5iaSnitREyt5kGFIg==,tag:aXxUIOlub4UNKORlxfnCbVpyI1sm2Ku/VVOesatXJy4=,data:xVT6HIbQFSh2dU1KZ2FCIRUcG/p0NNkd3ioXPWlcMuGVyqFGxl/A9SLl5X3sJKLnW7t3L8oFfer6]".to_string());
             let llama_url = std::env::var("LLAMA_BASE_URL")
                 .unwrap_or_else(|_| "http://llama-cpp.llama-cpp.svc:8080/v1".to_string());
 
