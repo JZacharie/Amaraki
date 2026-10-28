@@ -246,6 +246,11 @@ impl GatekeeperStore {
             let summary = "consulter et analyser les logs, métriques et traces sur OpenObserve".to_string();
             return (agent, summary);
         }
+        if lower.contains("opencode-mnemosyne") || lower.contains("mnemosyne-agent") {
+            let agent = "opencode-mnemosyne".to_string();
+            let summary = "interroger la base documentaire Mnemosyne RAG et produire une synthèse sourcée".to_string();
+            return (agent, summary);
+        }
         if lower.contains("agent-incident-responder") || lower.contains("incident-responder") {
             let agent = "agent-incident-responder".to_string();
             let summary =
@@ -316,7 +321,20 @@ impl GatekeeperStore {
             return (agent, summary);
         }
 
-        // 3. Diagnostic Kubernetes / Pods / Cluster
+        // 3. Mnemosyne RAG & Base documentaire / Wiki
+        if lower.contains("mnemosyne")
+            || lower.contains("rag")
+            || lower.contains("recherche documentaire")
+            || lower.contains("base de connaissances")
+            || lower.contains("base documentaire")
+            || lower.contains("documentation")
+        {
+            let agent = "opencode-mnemosyne".to_string();
+            let summary = "rechercher dans la base documentaire Mnemosyne RAG et synthétiser les informations pertinentes".to_string();
+            return (agent, summary);
+        }
+
+        // 4. Diagnostic Kubernetes / Pods / Cluster
         if lower.contains("k8s")
             || lower.contains("pod")
             || lower.contains("cluster")
@@ -331,7 +349,7 @@ impl GatekeeperStore {
             return (agent, summary);
         }
 
-        // 4. Incidents & alertes critiques
+        // 5. Incidents & alertes critiques
         if lower.contains("incident")
             || lower.contains("alerte")
             || lower.contains("secours")
@@ -343,7 +361,7 @@ impl GatekeeperStore {
             return (agent, summary);
         }
 
-        // 5. Default / Agent général
+        // 6. Default / Agent général
         let agent = "agent-code-reviewer".to_string();
         let prompt_preview = if text.len() > 80 {
             format!("{}...", &text[..77])
@@ -602,5 +620,12 @@ mod tests {
         let (agent, _) =
             GatekeeperStore::analyze_intent("prépare la musique pour le transfert USB");
         assert_eq!(agent, "opencode-deezer");
+
+        // Mnemosyne RAG
+        let (agent, _) = GatekeeperStore::analyze_intent("opencode-mnemosyne: cherche la doc sur k8s");
+        assert_eq!(agent, "opencode-mnemosyne");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("cherche dans la base documentaire et la documentation du cluster");
+        assert_eq!(agent, "opencode-mnemosyne");
     }
 }

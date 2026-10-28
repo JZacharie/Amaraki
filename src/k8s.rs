@@ -373,8 +373,52 @@ pub async fn spawn_agent_job(
             "model": &model
         });
 
-        // Détection et injection automatique du provider llama-cpp
-        if model.starts_with("llama-cpp/") {
+        // Détection et injection automatique du provider LLM (litellm, strata, llama-cpp)
+        if model.starts_with("litellm/") {
+            let model_id = model.trim_start_matches("litellm/");
+            let litellm_key = std::env::var("LITELLM_API_KEY")
+                .unwrap_or_else(|_| "sk-litellm".to_string());
+            let litellm_url = std::env::var("LITELLM_BASE_URL")
+                .unwrap_or_else(|_| "http://litellm.litellm.svc.cluster.local:4000/v1".to_string());
+
+            opencode_config["provider"] = json!({
+                "litellm": {
+                    "name": "LiteLLM",
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": litellm_url,
+                        "apiKey": litellm_key
+                    },
+                    "models": {
+                        model_id: {
+                            "name": model_id
+                        }
+                    }
+                }
+            });
+        } else if model.starts_with("strata/") {
+            let model_id = model.trim_start_matches("strata/");
+            let strata_key = std::env::var("STRATA_API_KEY")
+                .unwrap_or_else(|_| "default".to_string());
+            let strata_url = std::env::var("STRATA_BASE_URL")
+                .unwrap_or_else(|_| "http://strata.strata.svc.cluster.local:8080/v1".to_string());
+
+            opencode_config["provider"] = json!({
+                "strata": {
+                    "name": "Strata",
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": strata_url,
+                        "apiKey": strata_key
+                    },
+                    "models": {
+                        model_id: {
+                            "name": model_id
+                        }
+                    }
+                }
+            });
+        } else if model.starts_with("llama-cpp/") {
             let model_id = model.trim_start_matches("llama-cpp/");
             let llama_key = std::env::var("LLAMA_API_KEY")
                 .unwrap_or_else(|_| "ENC[SYM256,salt:jLNxPjPQllmoiuDdP4Wfjw==,iv:baU1h5iaSnitREyt5kGFIg==,tag:aXxUIOlub4UNKORlxfnCbVpyI1sm2Ku/VVOesatXJy4=,data:xVT6HIbQFSh2dU1KZ2FCIRUcG/p0NNkd3ioXPWlcMuGVyqFGxl/A9SLl5X3sJKLnW7t3L8oFfer6]".to_string());
@@ -396,6 +440,13 @@ pub async fn spawn_agent_job(
                     }
                 }
             });
+        }
+
+        // Injection de l'URL Mnemosyne RAG par défaut pour tous les agents
+        let mnemosyne_url = std::env::var("MNEMOSYNE_URL")
+            .unwrap_or_else(|_| "http://mnemosyne.mnemosyne.svc.cluster.local:8080".to_string());
+        if !env_list.iter().any(|e| e.get("name").and_then(|n| n.as_str()) == Some("MNEMOSYNE_URL")) {
+            env_list.push(json!({ "name": "MNEMOSYNE_URL", "value": mnemosyne_url }));
         }
 
         if let Some(prompt) = &cfg.system_prompt {
@@ -617,6 +668,19 @@ for r in repos:
             p_file = os.path.join(target_dir, prompt_name)
             if os.path.exists(p_file):
                 print(f'  [DOC] Document de capacités trouvé : {p_file}')
+
+        # 3. Standardisation arborescence Wiki pour la mémoire persistante d agent
+        if 'wiki' in rel_path.lower() or 'memory' in rel_path.lower():
+            for sub in [f'agents/{agent_name}', 'playbooks', 'knowledge']:
+                os.makedirs(os.path.join(target_dir, sub), exist_ok=True)
+            index_path = os.path.join(target_dir, 'index.md')
+            if not os.path.exists(index_path):
+                with open(index_path, 'w', encoding='utf-8') as f_idx:
+                    f_idx.write('# Section 9 Agent Wiki\n\nWiki centralise de la memoire des agents Amaraki.\n')
+            agent_mem = os.path.join(target_dir, f'agents/{agent_name}/memory.md')
+            if not os.path.exists(agent_mem):
+                with open(agent_mem, 'w', encoding='utf-8') as f_mem:
+                    f_mem.write(f'# Memoire de l agent {agent_name}\n\nHistorique, preferences et apprentissages continus.\n')
 "
 fi
 
@@ -681,7 +745,7 @@ for r in repos:
     if status.stdout.strip():
         print(f'==> Modifications détectées dans [{name}], commit et push en cours...')
         subprocess.run(['git', 'add', '-A'], cwd=target_dir)
-        commit_msg = f'chore({agent_name}): update powers and memory [{job_id}]'
+        commit_msg = f'chore({agent_name}): update wiki memory and knowledge [{job_id}]'
         subprocess.run(['git', 'commit', '-m', commit_msg], cwd=target_dir)
 
         # Assure l'URL avec token pour le push
@@ -1457,5 +1521,42 @@ mod tests {
             "http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse"
         );
         assert!(mcp["buzz"].get("timeout").is_none());
+    }
+
+    #[test]
+    fn test_agent_config_with_mnemosyne_and_wiki_repos() {
+        let json_raw = r#"{
+            "name": "opencode-mnemosyne",
+            "description": "Agent de recherche documentaire Mnemosyne RAG",
+            "model": "litellm/architect-expert",
+            "system_prompt": "Tu es l'agent RAG Section 9.",
+            "skills": ["find-skills"],
+            "git_repos": [
+                {
+                    "url": "https://github.com/JZacharie/amaraki-agent-memory.git",
+                    "name": "wiki",
+                    "branch": "main",
+                    "path": "wiki",
+                    "writable": true,
+                    "secret_ref": "amaraki-github-credentials",
+                    "token_key": "GITHUB_TOKEN"
+                }
+            ],
+            "env": {
+                "MNEMOSYNE_URL": "http://mnemosyne.mnemosyne.svc.cluster.local:8080"
+            }
+        }"#;
+
+        let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        assert_eq!(config.name, "opencode-mnemosyne");
+        assert_eq!(config.model.as_deref(), Some("litellm/architect-expert"));
+        let repos = config.git_repos.unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name.as_deref(), Some("wiki"));
+        assert_eq!(repos[0].writable, Some(true));
+        assert_eq!(
+            config.env.get("MNEMOSYNE_URL").map(String::as_str),
+            Some("http://mnemosyne.mnemosyne.svc.cluster.local:8080")
+        );
     }
 }
