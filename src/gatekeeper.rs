@@ -234,8 +234,20 @@ impl GatekeeperStore {
                 "analyser le code source et proposer des optimisations techniques".to_string();
             return (agent, summary);
         }
+        if lower.contains("opencode-cluster-remediator")
+            || lower.contains("cluster-remediator")
+            || lower.contains("remediateur")
+            || lower.contains("remediator")
+            || lower.contains("k8s-remediator")
+        {
+            let agent = "opencode-cluster-remediator".to_string();
+            let summary =
+                "diagnostiquer et appliquer les corrections sur le cluster jo3 via GitOps et Kubernetes"
+                    .to_string();
+            return (agent, summary);
+        }
         if lower.contains("agent-k8s-diagnostician") || lower.contains("k8s-diagnostician") {
-            let agent = "agent-k8s-diagnostician".to_string();
+            let agent = "opencode-cluster-remediator".to_string();
             let summary =
                 "diagnostiquer l'état des pods et analyser les anomalies du cluster Kubernetes"
                     .to_string();
@@ -308,20 +320,7 @@ impl GatekeeperStore {
             return (agent, summary);
         }
 
-        // 2. Code Review & analyse de code
-        if lower.contains("code")
-            || lower.contains("revue")
-            || lower.contains("review")
-            || lower.contains("pr")
-            || lower.contains("git")
-            || lower.contains("refactor")
-        {
-            let agent = "agent-code-reviewer".to_string();
-            let summary = "analyser le code source et proposer des optimisations techniques et architecturales".to_string();
-            return (agent, summary);
-        }
-
-        // 3. Mnemosyne RAG & Base documentaire / Wiki
+        // 4. Mnemosyne RAG & Base documentaire / Wiki
         if lower.contains("mnemosyne")
             || lower.contains("rag")
             || lower.contains("recherche documentaire")
@@ -334,18 +333,37 @@ impl GatekeeperStore {
             return (agent, summary);
         }
 
-        // 4. Diagnostic Kubernetes / Pods / Cluster
+        // 5. Diagnostic & Remédiation Kubernetes / Pods / Cluster jo3
         if lower.contains("k8s")
             || lower.contains("pod")
             || lower.contains("cluster")
             || lower.contains("crash")
             || lower.contains("anomalie")
             || lower.contains("log")
+            || lower.contains("corrige")
+            || lower.contains("correction")
+            || lower.contains("remedie")
+            || lower.contains("répare")
+            || lower.contains("repare")
+            || lower.contains("jo3")
         {
-            let agent = "agent-k8s-diagnostician".to_string();
+            let agent = "opencode-cluster-remediator".to_string();
             let summary =
-                "diagnostiquer l'état des pods et analyser les anomalies du cluster Kubernetes"
+                "diagnostiquer l'état du cluster jo3, analyser les anomalies et appliquer les corrections nécessaires"
                     .to_string();
+            return (agent, summary);
+        }
+
+        // 6. Code Review & analyse de code
+        if words.contains(&"code")
+            || lower.contains("revue")
+            || lower.contains("review")
+            || words.contains(&"pr")
+            || words.contains(&"git")
+            || lower.contains("refactor")
+        {
+            let agent = "agent-code-reviewer".to_string();
+            let summary = "analyser le code source et proposer des optimisations techniques et architecturales".to_string();
             return (agent, summary);
         }
 
@@ -605,7 +623,13 @@ mod tests {
         assert_eq!(agent, "opencode-mail");
 
         let (agent, _) = GatekeeperStore::analyze_intent("vérifie les pods du cluster k8s");
-        assert_eq!(agent, "agent-k8s-diagnostician");
+        assert_eq!(agent, "opencode-cluster-remediator");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("corrige le cluster jo3 avec opencode");
+        assert_eq!(agent, "opencode-cluster-remediator");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("opencode-cluster-remediator: répare les pods en erreur");
+        assert_eq!(agent, "opencode-cluster-remediator");
 
         let (agent, _) = GatekeeperStore::analyze_intent("fais une review du code de la PR");
         assert_eq!(agent, "agent-code-reviewer");

@@ -588,6 +588,14 @@ if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then
   printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.json
 fi
 
+# Vérification et installation automatique de kubectl si absent (diagnostic et remédiation)
+mkdir -p "$HOME/bin"
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "[$TS_START] [K8S_INIT] ⚙️ Téléchargement du binaire kubectl..."
+  curl -fsSL -o "$HOME/bin/kubectl" https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl 2>/dev/null && chmod +x "$HOME/bin/kubectl" || true
+fi
+export PATH="$HOME/bin:$PATH"
+
 # Espace de travail des serveurs MCP locaux (filesystem/git). L'image runner
 # fournit /home/developer mais pas ce dossier : le serveur MCP filesystem refuse
 # de demarrer si la racine declaree en argument n'existe pas.
