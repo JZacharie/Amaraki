@@ -39,6 +39,10 @@ pub struct AgentConfigMapData {
     pub skills: Option<Vec<String>>,
     #[serde(default)]
     pub git_repos: Option<Vec<AgentGitRepo>>,
+    #[serde(default)]
+    pub engine: Option<String>,
+    #[serde(default)]
+    pub thinking: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +176,8 @@ pub async fn get_agent_config(
                         env: std::collections::HashMap::new(),
                         skills,
                         git_repos: None,
+                        engine: None,
+                        thinking: None,
                     }));
                 }
             }
@@ -340,9 +346,34 @@ pub async fn spawn_agent_job(
         .unwrap_or(3)
         .min(3);
 
+    let is_antigravity = maybe_config
+        .as_ref()
+        .and_then(|cfg| cfg.engine.as_deref())
+        .map(|e| e == "antigravity" || e == "agy")
+        .unwrap_or_else(|| {
+            safe_agent_name.contains("antigravity")
+                || (model.to_lowercase().contains("gemini") && safe_agent_name.contains("antigravity"))
+        });
+
+    let engine = if is_antigravity {
+        "antigravity".to_string()
+    } else {
+        maybe_config
+            .as_ref()
+            .and_then(|cfg| cfg.engine.clone())
+            .unwrap_or_else(|| "opencode".to_string())
+    };
+
+    let thinking = maybe_config
+        .as_ref()
+        .and_then(|cfg| cfg.thinking.clone())
+        .unwrap_or_else(|| "Medium".to_string());
+
     let mut env_list = vec![
         json!({ "name": "AGENT_NAME", "value": agent_name }),
         json!({ "name": "AGENT_MODEL", "value": &model }),
+        json!({ "name": "AGENT_ENGINE", "value": &engine }),
+        json!({ "name": "AGENT_THINKING", "value": &thinking }),
         json!({ "name": "USER_PROMPT", "value": bounded_prompt }),
         json!({ "name": "SLACK_CHANNEL", "value": channel }),
         json!({ "name": "SLACK_THREAD_TS", "value": thread_ts }),
@@ -352,6 +383,18 @@ pub async fn spawn_agent_job(
         json!({ "name": "MAX_AGENT_ITERATIONS", "value": max_iterations.to_string() }),
         json!({ "name": "PREVENT_AGENT_RECURSION", "value": "true" }),
     ];
+
+    if is_antigravity {
+        let antigravity_config = json!({
+            "model": &model,
+            "modelProvider": "gemini",
+            "thinking": &thinking,
+            "reasoning_effort": thinking.to_lowercase()
+        });
+        if let Ok(config_str) = serde_json::to_string(&antigravity_config) {
+            env_list.push(json!({ "name": "ANTIGRAVITY_CONFIG_CONTENT", "value": config_str }));
+        }
+    }
 
     if let Ok(token) = std::env::var("SLACK_BOT_TOKEN") {
         env_list.push(json!({ "name": "SLACK_BOT_TOKEN", "value": token }));
@@ -485,6 +528,15 @@ pub async fn spawn_agent_job(
         }),
     ];
 
+    if is_antigravity {
+        env_from.push(json!({
+            "secretRef": {
+                "name": "antigravity-credentials",
+                "optional": true
+            }
+        }));
+    }
+
     if let Some(cfg) = &maybe_config {
         if let Some(repos) = &cfg.git_repos {
             for repo in repos {
@@ -586,6 +638,39 @@ mkdir -p ~/.config/opencode
 if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then
   printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.jsonc
   printf "%s" "$OPENCODE_CONFIG_CONTENT" > ~/.config/opencode/opencode.json
+fi
+
+# Preparation et configuration d'Antigravity CLI (agy)
+if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
+  mkdir -p ~/.gemini/antigravity-cli ~/.gemini/config ~/.config/antigravity
+  if [ -n "$ANTIGRAVITY_CONFIG_CONTENT" ]; then
+    printf "%s" "$ANTIGRAVITY_CONFIG_CONTENT" > ~/.gemini/antigravity-cli/settings.json
+    printf "%s" "$ANTIGRAVITY_CONFIG_CONTENT" > ~/.config/antigravity/settings.json
+  fi
+
+  if [ -n "$ANTIGRAVITY_USER" ]; then
+    python3 -c "
+import os, json
+p = os.path.expanduser('~/.gemini/antigravity-cli/settings.json')
+try:
+    s = json.load(open(p))
+except Exception:
+    s = {}
+u = os.environ.get('ANTIGRAVITY_USER')
+s['user'] = u
+s['email'] = u
+s['account'] = u
+os.makedirs(os.path.dirname(p), exist_ok=True)
+with open(p, 'w') as f:
+    json.dump(s, f, indent=2)
+" 2>/dev/null || true
+  fi
+
+  mkdir -p "$HOME/bin"
+  if ! command -v agy >/dev/null 2>&1; then
+    echo "[$TS_START] [AGY_INIT] Installation d'Antigravity CLI (agy)..."
+    curl -fsSL --connect-timeout 15 --max-time 120 https://antigravity.google/cli/install.sh | bash -s -- --dir "$HOME/bin" 2>/dev/null || true
+  fi
 fi
 
 # Vérification et installation automatique de kubectl si absent (diagnostic et remédiation)
@@ -711,15 +796,24 @@ if [ -n "$AGENT_SKILLS" ]; then
 fi
 
 TS_RUN=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-echo "[$TS_RUN] [AGENT_EXEC] ⚡ Exécution d'OpenCode en cours..."
-
-# Exécution de l'agent et capture du code retour
-if [ -n "$AGENT_MODEL" ]; then
-  opencode run -m "$AGENT_MODEL" "$USER_PROMPT" || opencode run "$USER_PROMPT"
+if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
+  echo "[$TS_RUN] [AGENT_EXEC] Execution d'Antigravity CLI (agy)..."
+  cd "$HOME/workspace"
+  if [ -n "$AGENT_MODEL" ]; then
+    agy --model "$AGENT_MODEL" -p "$USER_PROMPT" || agy -p "$USER_PROMPT"
+  else
+    agy -p "$USER_PROMPT"
+  fi
+  EXIT_CODE=$?
 else
-  opencode run "$USER_PROMPT"
+  echo "[$TS_RUN] [AGENT_EXEC] Execution d'OpenCode..."
+  if [ -n "$AGENT_MODEL" ]; then
+    opencode run -m "$AGENT_MODEL" "$USER_PROMPT" || opencode run "$USER_PROMPT"
+  else
+    opencode run "$USER_PROMPT"
+  fi
+  EXIT_CODE=$?
 fi
-EXIT_CODE=$?
 
 # Sauvegarde / Push des modifications (Mémoire & Pouvoirs) si configuré
 if [ -n "$AGENT_GIT_REPOS" ]; then
@@ -1313,6 +1407,23 @@ mod tests {
 
         let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
         assert_eq!(config.name, "agent-code-reviewer");
+    }
+
+    #[test]
+    fn test_agent_config_deserialization_with_antigravity_engine() {
+        let json_raw = r#"{
+            "name": "antigravity-cli",
+            "description": "Antigravity CLI Agent",
+            "model": "Gemini 3.8 Flash (Medium)",
+            "engine": "antigravity",
+            "thinking": "Medium"
+        }"#;
+
+        let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        assert_eq!(config.name, "antigravity-cli");
+        assert_eq!(config.model.as_deref(), Some("Gemini 3.8 Flash (Medium)"));
+        assert_eq!(config.engine.as_deref(), Some("antigravity"));
+        assert_eq!(config.thinking.as_deref(), Some("Medium"));
         let skills = config.skills.expect("skills should be present");
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0], "find-skills");
