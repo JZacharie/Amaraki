@@ -667,7 +667,10 @@ s['email'] = u
 s['account'] = u
 if pwd:
     s['password'] = pwd
-if 'GEMINI_API_KEY' not in os.environ and 'modelProvider' in s:
+if 'GEMINI_API_KEY' in os.environ and os.environ.get('GEMINI_API_KEY'):
+    s['apiKey'] = os.environ.get('GEMINI_API_KEY')
+    s['modelProvider'] = 'gemini'
+elif 'GEMINI_API_KEY' not in os.environ and 'modelProvider' in s:
     del s['modelProvider']
 os.makedirs(os.path.dirname(p), exist_ok=True)
 with open(p, 'w') as f:
@@ -847,6 +850,7 @@ if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "$
   echo "[$TS_RUN] [AGENT_EXEC] Execution d'Antigravity CLI (agy)..."
   cd "$HOME/workspace"
   export AGY_ACCOUNT="${ANTIGRAVITY_USER:-joseph.zacharie@gmail.com}"
+  export GEMINI_API_KEY="${GEMINI_API_KEY:-}"
   if [ -n "$AGENT_MODEL" ]; then
     agy --dangerously-skip-permissions --model "$AGENT_MODEL" -p "$USER_PROMPT" || agy --dangerously-skip-permissions -p "$USER_PROMPT"
   else
