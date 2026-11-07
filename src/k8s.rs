@@ -18,9 +18,9 @@ pub struct AgentGitRepo {
     pub path: Option<String>,
     #[serde(default)]
     pub writable: Option<bool>,
-    #[serde(default)]
+    #[serde(default, alias = "secretRef")]
     pub secret_ref: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "tokenKey")]
     pub token_key: Option<String>,
 }
 
@@ -737,7 +737,7 @@ for r in repos:
     branch = r.get('branch') or 'main'
     rel_path = r.get('path') or name
     target_dir = os.path.join(workspace, rel_path)
-    token_key = r.get('token_key') or 'GITHUB_TOKEN'
+    token_key = r.get('token_key') or r.get('tokenKey') or 'GITHUB_TOKEN'
     token = os.environ.get(token_key) or os.environ.get('GITHUB_TOKEN') or os.environ.get('GIT_TOKEN')
 
     clone_url = url
@@ -898,7 +898,7 @@ for r in repos:
         subprocess.run(['git', 'commit', '-m', commit_msg], cwd=target_dir)
 
         # Assure l'URL avec token pour le push
-        token_key = r.get('token_key') or 'GITHUB_TOKEN'
+        token_key = r.get('token_key') or r.get('tokenKey') or 'GITHUB_TOKEN'
         token = os.environ.get(token_key) or os.environ.get('GITHUB_TOKEN') or os.environ.get('GIT_TOKEN')
         url = r.get('url', '')
         if token and 'https://' in url and '@' not in url:
@@ -1463,7 +1463,11 @@ mod tests {
             "description": "Antigravity CLI Agent",
             "model": "Gemini 3.8 Flash (Medium)",
             "engine": "antigravity",
-            "thinking": "Medium"
+            "thinking": "Medium",
+            "skills": [
+                "find-skills",
+                "vercel-labs/skills@find-skills"
+            ]
         }"#;
 
         let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
@@ -1518,6 +1522,25 @@ mod tests {
         assert_eq!(repos[0].path.as_deref(), Some("memory"));
         assert_eq!(repos[0].writable, Some(true));
         assert_eq!(repos[0].secret_ref.as_deref(), Some("github-secret"));
+        assert_eq!(repos[0].token_key.as_deref(), Some("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn test_agent_config_deserialization_with_camel_case_git_repos() {
+        let json_raw = r#"{
+            "name": "agent-git-camel",
+            "git_repos": [
+                {
+                    "url": "https://github.com/JZacharie/amaraki-agent-memory.git",
+                    "secretRef": "amaraki-github-credentials",
+                    "tokenKey": "GITHUB_TOKEN"
+                }
+            ]
+        }"#;
+
+        let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        let repos = config.git_repos.expect("git_repos should be present");
+        assert_eq!(repos[0].secret_ref.as_deref(), Some("amaraki-github-credentials"));
         assert_eq!(repos[0].token_key.as_deref(), Some("GITHUB_TOKEN"));
     }
 
