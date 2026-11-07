@@ -15,6 +15,7 @@ mod k8s;
 mod metrics;
 mod otel;
 mod slack;
+mod tts;
 mod web;
 
 use auth::{require_auth_middleware, AuthConfig};
@@ -23,6 +24,7 @@ use metrics::MetricsStore;
 use opentelemetry::trace::TracerProvider as _;
 use slack::SlackNotifier;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tts::GradiumTts;
 use web::WebState;
 
 #[derive(Clone)]
@@ -34,6 +36,7 @@ pub struct AppState {
     pub auth: Arc<AuthConfig>,
     pub slack_notifier: Arc<SlackNotifier>,
     pub gatekeeper: Arc<GatekeeperStore>,
+    pub gradium_tts: Arc<GradiumTts>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -139,6 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let slack_notifier = Arc::new(SlackNotifier::new());
     let gatekeeper = Arc::new(GatekeeperStore::new());
+    let gradium_tts = Arc::new(GradiumTts::new());
 
     let state = Arc::new(AppState {
         k8s_client: k8s_client.clone(),
@@ -148,6 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth: auth.clone(),
         slack_notifier: slack_notifier.clone(),
         gatekeeper: gatekeeper.clone(),
+        gradium_tts: gradium_tts.clone(),
     });
 
     let web_state = Arc::new(WebState {
@@ -538,6 +543,7 @@ async fn process_agent_request(
                 let channel_clone = event.channel.clone();
                 let thread_id_clone = thread_id.clone();
                 let notifier_clone = state.slack_notifier.clone();
+                let tts_clone = state.gradium_tts.clone();
 
                 tokio::spawn(async move {
                     let jobs_api: kube::Api<k8s_openapi::api::batch::v1::Job> =
@@ -584,6 +590,40 @@ async fn process_agent_request(
                                             Some(&thread_id_clone),
                                         )
                                         .await;
+
+                                    if tts_clone.is_configured() {
+                                        let speech_summary = if !analysis.formatted_output.is_empty() {
+                                            format!(
+                                                "Chef Amaraki : Compte-rendu de mission pour {}. Statut : {}. {}",
+                                                agent_name_clone,
+                                                analysis.summary_note,
+                                                analysis.formatted_output
+                                            )
+                                        } else {
+                                            format!(
+                                                "Chef Amaraki : Compte-rendu de mission pour {}. Statut : {}.",
+                                                agent_name_clone,
+                                                analysis.summary_note
+                                            )
+                                        };
+
+                                        match tts_clone.synthesize(&speech_summary).await {
+                                            Ok(audio_bytes) => {
+                                                notifier_clone
+                                                    .upload_audio(
+                                                        &channel_clone,
+                                                        Some(&thread_id_clone),
+                                                        &audio_bytes,
+                                                        "reponse_amaraki.wav",
+                                                        &format!("Chef Amaraki - {}", agent_name_clone),
+                                                    )
+                                                    .await;
+                                            }
+                                            Err(e) => {
+                                                error!("[TTS] ❌ Erreur synthèse audio Gradium: {:?}", e);
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                             }
@@ -619,6 +659,25 @@ async fn process_agent_request(
             .slack_notifier
             .post_message(&event.channel, &sim_msg, Some(&thread_id))
             .await;
+
+        if state.gradium_tts.is_configured() {
+            let sim_speech = format!(
+                "Chef Amaraki : En mode autonome, simulation de mission lancée pour {}.",
+                agent_name
+            );
+            if let Ok(audio_bytes) = state.gradium_tts.synthesize(&sim_speech).await {
+                state
+                    .slack_notifier
+                    .upload_audio(
+                        &event.channel,
+                        Some(&thread_id),
+                        &audio_bytes,
+                        "simulation_amaraki.wav",
+                        &format!("Chef Amaraki - Simulation {}", agent_name),
+                    )
+                    .await;
+            }
+        }
         state
             .metrics
             .record_agent_spawn(

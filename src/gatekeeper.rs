@@ -269,6 +269,21 @@ impl GatekeeperStore {
                 "coordonner l'investigation et la réponse à l'incident critique".to_string();
             return (agent, summary);
         }
+        if lower.contains("agent-test-antigravity")
+            || lower.contains("antigravity-test")
+            || lower.contains("test-antigravity")
+            || lower.contains("antigravity-cli")
+            || lower.contains("antigravity")
+            || lower.contains("agy")
+        {
+            let agent = if lower.contains("test") {
+                "agent-test-antigravity".to_string()
+            } else {
+                "antigravity-cli".to_string()
+            };
+            let summary = "exécuter la mission via l'agent Antigravity CLI (agy) de la Section 9".to_string();
+            return (agent, summary);
+        }
 
         // 1. Leclerc Drive & Courses
         if lower.contains("leclerc")
@@ -648,6 +663,13 @@ mod tests {
         // Mnemosyne RAG
         let (agent, _) = GatekeeperStore::analyze_intent("opencode-mnemosyne: cherche la doc sur k8s");
         assert_eq!(agent, "opencode-mnemosyne");
+
+        // Antigravity CLI & Test
+        let (agent, _) = GatekeeperStore::analyze_intent("antigravity-cli: vérifie le dépôt jo3");
+        assert_eq!(agent, "antigravity-cli");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("lance un test avec agy pour valider le profil");
+        assert_eq!(agent, "agent-test-antigravity");
 
         let (agent, _) = GatekeeperStore::analyze_intent("cherche dans la base documentaire et la documentation du cluster");
         assert_eq!(agent, "opencode-mnemosyne");

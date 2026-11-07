@@ -323,4 +323,153 @@ impl SlackNotifier {
             }
         }
     }
+
+    /// Téléverse un fichier audio dans un canal ou fil Slack via la nouvelle API files.getUploadURLExternal / files.completeUploadExternal
+    pub async fn upload_audio(
+        &self,
+        channel: &str,
+        thread_ts: Option<&str>,
+        audio_bytes: &[u8],
+        filename: &str,
+        title: &str,
+    ) -> bool {
+        let token = match &self.token {
+            Some(t) => t,
+            None => {
+                warn!("[SLACK] Téléversement audio ignoré : SLACK_BOT_TOKEN non configuré");
+                return false;
+            }
+        };
+
+        if audio_bytes.is_empty() {
+            warn!("[SLACK] Téléversement audio ignoré : tampon audio vide");
+            return false;
+        }
+
+        // Étape 1 : Obtenir l'URL de téléversement externe Slack
+        let get_url = format!(
+            "https://slack.com/api/files.getUploadURLExternal?filename={}&length={}",
+            filename,
+            audio_bytes.len()
+        );
+
+        let step1_resp = match self
+            .client
+            .get(&get_url)
+            .bearer_auth(token)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[SLACK] ❌ Échec files.getUploadURLExternal: {}", e);
+                return false;
+            }
+        };
+
+        let step1_json: serde_json::Value = match step1_resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                error!("[SLACK] ❌ Erreur parsing réponse getUploadURLExternal: {}", e);
+                return false;
+            }
+        };
+
+        if !step1_json.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
+            error!(
+                "[SLACK] ❌ Échec API files.getUploadURLExternal: {:?}",
+                step1_json.get("error")
+            );
+            return false;
+        }
+
+        let upload_url = match step1_json.get("upload_url").and_then(|u| u.as_str()) {
+            Some(u) => u,
+            None => {
+                error!("[SLACK] ❌ upload_url manquant dans la réponse Slack");
+                return false;
+            }
+        };
+
+        let file_id = match step1_json.get("file_id").and_then(|f| f.as_str()) {
+            Some(f) => f,
+            None => {
+                error!("[SLACK] ❌ file_id manquant dans la réponse Slack");
+                return false;
+            }
+        };
+
+        // Étape 2 : POST des octets bruts vers l'URL dédiée
+        let step2_resp = match self
+            .client
+            .post(upload_url)
+            .header("Content-Type", "audio/wav")
+            .body(audio_bytes.to_vec())
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[SLACK] ❌ Échec POST des données audio vers Slack: {}", e);
+                return false;
+            }
+        };
+
+        if !step2_resp.status().is_success() {
+            error!(
+                "[SLACK] ❌ Échec téléversement payload audio: HTTP {}",
+                step2_resp.status()
+            );
+            return false;
+        }
+
+        // Étape 3 : Finaliser le téléversement et attacher le fichier au canal/thread
+        let complete_payload = serde_json::json!({
+            "files": [
+                {
+                    "id": file_id,
+                    "title": title
+                }
+            ],
+            "channel_id": channel,
+            "thread_ts": thread_ts
+        });
+
+        let step3_resp = match self
+            .client
+            .post("https://slack.com/api/files.completeUploadExternal")
+            .bearer_auth(token)
+            .json(&complete_payload)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[SLACK] ❌ Échec files.completeUploadExternal: {}", e);
+                return false;
+            }
+        };
+
+        let step3_json: serde_json::Value = match step3_resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                error!("[SLACK] ❌ Erreur parsing files.completeUploadExternal: {}", e);
+                return false;
+            }
+        };
+
+        if step3_json.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
+            info!(
+                "[SLACK] 🎙️ Audio envoyé avec succès dans '{}' (thread: {:?}, file_id: {})",
+                channel, thread_ts, file_id
+            );
+            true
+        } else {
+            error!(
+                "[SLACK] ❌ Échec finalisation files.completeUploadExternal: {:?}",
+                step3_json.get("error")
+            );
+            false
+        }
+    }
 }

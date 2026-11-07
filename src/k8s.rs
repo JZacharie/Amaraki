@@ -385,12 +385,16 @@ pub async fn spawn_agent_job(
     ];
 
     if is_antigravity {
-        let antigravity_config = json!({
+        let mut antigravity_config = json!({
             "model": &model,
-            "modelProvider": "gemini",
             "thinking": &thinking,
             "reasoning_effort": thinking.to_lowercase()
         });
+        if let Ok(gemini_key) = std::env::var("GEMINI_API_KEY") {
+            if !gemini_key.is_empty() {
+                antigravity_config["modelProvider"] = json!("gemini");
+            }
+        }
         if let Ok(config_str) = serde_json::to_string(&antigravity_config) {
             env_list.push(json!({ "name": "ANTIGRAVITY_CONFIG_CONTENT", "value": config_str }));
         }
@@ -442,9 +446,9 @@ pub async fn spawn_agent_job(
         } else if model.starts_with("strata/") {
             let model_id = model.trim_start_matches("strata/");
             let strata_key = std::env::var("STRATA_API_KEY")
-                .unwrap_or_else(|_| "default".to_string());
+                .unwrap_or_else(|_| "sk-strata-local".to_string());
             let strata_url = std::env::var("STRATA_BASE_URL")
-                .unwrap_or_else(|_| "http://strata.strata.svc.cluster.local:8080/v1".to_string());
+                .unwrap_or_else(|_| "http://192.168.0.58:8081/v1".to_string());
 
             opencode_config["provider"] = json!({
                 "strata": {
@@ -642,34 +646,48 @@ fi
 
 # Preparation et configuration d'Antigravity CLI (agy)
 if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
-  mkdir -p ~/.gemini/antigravity-cli ~/.gemini/config ~/.config/antigravity
+  mkdir -p ~/.gemini/antigravity-cli ~/.gemini/config ~/.config/antigravity ~/.gemini/antigravity
   if [ -n "$ANTIGRAVITY_CONFIG_CONTENT" ]; then
     printf "%s" "$ANTIGRAVITY_CONFIG_CONTENT" > ~/.gemini/antigravity-cli/settings.json
     printf "%s" "$ANTIGRAVITY_CONFIG_CONTENT" > ~/.config/antigravity/settings.json
   fi
 
-  if [ -n "$ANTIGRAVITY_USER" ]; then
-    python3 -c "
+  python3 -c "
 import os, json
 p = os.path.expanduser('~/.gemini/antigravity-cli/settings.json')
 try:
-    s = json.load(open(p))
+    with open(p, 'r') as f:
+        s = json.load(f)
 except Exception:
     s = {}
-u = os.environ.get('ANTIGRAVITY_USER')
+u = os.environ.get('ANTIGRAVITY_USER') or os.environ.get('GOOGLE_EMAIL') or 'joseph.zacharie@gmail.com'
+pwd = os.environ.get('ANTIGRAVITY_PASSWORD') or os.environ.get('GOOGLE_PASSWORD')
 s['user'] = u
 s['email'] = u
 s['account'] = u
+if pwd:
+    s['password'] = pwd
+if 'GEMINI_API_KEY' not in os.environ and 'modelProvider' in s:
+    del s['modelProvider']
 os.makedirs(os.path.dirname(p), exist_ok=True)
 with open(p, 'w') as f:
     json.dump(s, f, indent=2)
-" 2>/dev/null || true
-  fi
 
-  mkdir -p "$HOME/bin"
+for alt in ['~/.config/antigravity/settings.json', '~/.gemini/config/config.json', '~/.gemini/antigravity/settings.json']:
+    alt_p = os.path.expanduser(alt)
+    os.makedirs(os.path.dirname(alt_p), exist_ok=True)
+    with open(alt_p, 'w') as f:
+        json.dump(s, f, indent=2)
+" 2>/dev/null || true
+
+  mkdir -p "$HOME/bin" "$HOME/.local/bin"
+  export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
   if ! command -v agy >/dev/null 2>&1; then
     echo "[$TS_START] [AGY_INIT] Installation d'Antigravity CLI (agy)..."
     curl -fsSL --connect-timeout 15 --max-time 120 https://antigravity.google/cli/install.sh | bash -s -- --dir "$HOME/bin" 2>/dev/null || true
+    if [ -f "$HOME/.local/bin/agy" ] && [ ! -f "$HOME/bin/agy" ]; then
+      ln -sf "$HOME/.local/bin/agy" "$HOME/bin/agy" || true
+    fi
   fi
 fi
 
@@ -679,7 +697,7 @@ if ! command -v kubectl >/dev/null 2>&1; then
   echo "[$TS_START] [K8S_INIT] ⚙️ Téléchargement du binaire kubectl..."
   curl -fsSL -o "$HOME/bin/kubectl" https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl 2>/dev/null && chmod +x "$HOME/bin/kubectl" || true
 fi
-export PATH="$HOME/bin:$PATH"
+export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 
 # Espace de travail des serveurs MCP locaux (filesystem/git). L'image runner
 # fournit /home/developer mais pas ce dossier : le serveur MCP filesystem refuse
@@ -795,14 +813,43 @@ if [ -n "$AGENT_SKILLS" ]; then
   done
 fi
 
+# Injection des instructions / systemPrompt pour les agents Antigravity CLI
+if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
+  python3 -c "
+import os, json
+cfg_path = os.environ.get('AGENT_CONFIG_PATH', '/etc/agent/agent.json')
+prompt = ''
+if os.path.exists(cfg_path):
+    try:
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            c = json.load(f)
+            prompt = c.get('system_prompt') or ''
+    except Exception:
+        pass
+if not prompt and os.path.exists('/etc/agent/prompt.txt'):
+    try:
+        with open('/etc/agent/prompt.txt', 'r', encoding='utf-8') as f:
+            prompt = f.read()
+    except Exception:
+        pass
+if prompt:
+    ws = os.path.expanduser('~/workspace')
+    os.makedirs(ws, exist_ok=True)
+    for fn in ['AGENTS.md', 'GEMINI.md']:
+        with open(os.path.join(ws, fn), 'w', encoding='utf-8') as f:
+            f.write(prompt)
+" 2>/dev/null || true
+fi
+
 TS_RUN=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
   echo "[$TS_RUN] [AGENT_EXEC] Execution d'Antigravity CLI (agy)..."
   cd "$HOME/workspace"
+  export AGY_ACCOUNT="${ANTIGRAVITY_USER:-joseph.zacharie@gmail.com}"
   if [ -n "$AGENT_MODEL" ]; then
-    agy --model "$AGENT_MODEL" -p "$USER_PROMPT" || agy -p "$USER_PROMPT"
+    agy --dangerously-skip-permissions --model "$AGENT_MODEL" -p "$USER_PROMPT" || agy --dangerously-skip-permissions -p "$USER_PROMPT"
   else
-    agy -p "$USER_PROMPT"
+    agy --dangerously-skip-permissions -p "$USER_PROMPT"
   fi
   EXIT_CODE=$?
 else
