@@ -728,6 +728,7 @@ except Exception as e:
 
 workspace = os.path.expanduser('~/workspace')
 home = os.path.expanduser('~')
+agent_name = os.environ.get('AGENT_NAME') or 'agent'
 
 for r in repos:
     url = r.get('url', '')
