@@ -72,6 +72,15 @@ pub async fn dashboard_stats_handler(State(state): State<Arc<WebState>>) -> impl
     Json(summary)
 }
 
+// Public agent mission & upgrade reports API (consumed by Iris)
+pub async fn agent_reports_handler(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let reports = state.metrics.get_recent_executions().await;
+    Json(serde_json::json!({
+        "status": "ok",
+        "reports": reports
+    }))
+}
+
 // Agent configuration JSON export API
 pub async fn agent_config_handler(
     State(state): State<Arc<WebState>>,
@@ -398,6 +407,7 @@ pub async fn test_trigger_handler(
                     thread_ts,
                     state.slack_notifier.clone(),
                     state.gradium_tts.clone(),
+                    state.metrics.clone(),
                 );
 
                 (
@@ -446,10 +456,22 @@ pub async fn test_trigger_handler(
         // Simulate asynchronous completion after 3 seconds
         let metrics_clone = state.metrics.clone();
         let sim_id_clone = sim_id.clone();
+        let agent_clone = agent_name.clone();
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
             metrics_clone
                 .record_agent_completion(&sim_id_clone, true, Some(3.2))
+                .await;
+            metrics_clone
+                .record_agent_report(
+                    &sim_id_clone,
+                    true,
+                    "Mission simulée accomplie avec succès".to_string(),
+                    format!(
+                        "Rapport simulé pour l'agent {} (job {}).",
+                        agent_clone, sim_id_clone
+                    ),
+                )
                 .await;
             metrics_clone.record_tool_invocation("filesystem").await;
         });

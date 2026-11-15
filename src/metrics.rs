@@ -20,10 +20,27 @@ pub struct ExecutionRecord {
     pub model: String,
     pub channel: String,
     pub prompt_preview: String,
+    #[serde(default)]
+    pub prompt: String,
     pub status: ExecutionStatus,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub duration_secs: Option<f64>,
+    #[serde(default)]
+    pub is_real_success: Option<bool>,
+    #[serde(default)]
+    pub summary_note: Option<String>,
+    #[serde(default)]
+    pub report_output: Option<String>,
+}
+
+fn build_prompt_preview(prompt: &str) -> String {
+    if prompt.chars().count() > 100 {
+        let truncated: String = prompt.chars().take(97).collect();
+        format!("{}...", truncated)
+    } else {
+        prompt.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,21 +335,20 @@ impl MetricsStore {
             if recents.len() >= 50 {
                 recents.pop_back();
             }
-            let prompt_preview = if prompt.len() > 100 {
-                format!("{}...", &prompt[..97])
-            } else {
-                prompt.to_string()
-            };
             recents.push_front(ExecutionRecord {
                 id: job_id.to_string(),
                 agent_name: agent_name.to_string(),
                 model: model.to_string(),
                 channel: channel.to_string(),
-                prompt_preview,
+                prompt_preview: build_prompt_preview(prompt),
+                prompt: prompt.to_string(),
                 status: ExecutionStatus::Running,
                 started_at: now,
                 completed_at: None,
                 duration_secs: None,
+                is_real_success: None,
+                summary_note: None,
+                report_output: None,
             });
         }
     }
@@ -409,6 +425,90 @@ impl MetricsStore {
                 }
             }
         }
+    }
+
+    pub async fn record_agent_report(
+        &self,
+        job_id: &str,
+        is_real_success: bool,
+        summary_note: String,
+        report_output: String,
+    ) {
+        let now = Utc::now();
+        let mut recents = self.recent_executions.write().await;
+        for exec in recents.iter_mut() {
+            if exec.id == job_id {
+                exec.status = if is_real_success {
+                    ExecutionStatus::Succeeded
+                } else {
+                    ExecutionStatus::Failed
+                };
+                if exec.completed_at.is_none() {
+                    exec.completed_at = Some(now);
+                }
+                if exec.duration_secs.is_none() {
+                    let diff = now.signed_duration_since(exec.started_at);
+                    exec.duration_secs = Some((diff.num_milliseconds().max(0) as f64) / 1000.0);
+                }
+                exec.is_real_success = Some(is_real_success);
+                exec.summary_note = Some(summary_note);
+                exec.report_output = Some(report_output);
+                break;
+            }
+        }
+    }
+
+    pub async fn has_execution_report(&self, job_id: &str) -> bool {
+        let recents = self.recent_executions.read().await;
+        recents.iter().any(|exec| {
+            exec.id == job_id
+                && exec
+                    .report_output
+                    .as_deref()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
+        })
+    }
+
+    pub async fn upsert_k8s_execution(&self, record: ExecutionRecord) {
+        let mut recents = self.recent_executions.write().await;
+        if let Some(existing) = recents.iter_mut().find(|e| e.id == record.id) {
+            if existing.prompt.is_empty() && !record.prompt.is_empty() {
+                existing.prompt_preview = build_prompt_preview(&record.prompt);
+                existing.prompt = record.prompt;
+            }
+            if existing.completed_at.is_none() {
+                existing.completed_at = record.completed_at;
+            }
+            if existing.duration_secs.is_none() {
+                existing.duration_secs = record.duration_secs;
+            }
+            if existing.report_output.as_deref().unwrap_or("").is_empty() {
+                existing.is_real_success = record.is_real_success;
+                existing.summary_note = record.summary_note;
+                existing.report_output = record.report_output;
+                existing.status = record.status;
+            }
+            return;
+        }
+
+        recents.push_front(record);
+        let mut sorted: Vec<ExecutionRecord> = recents.drain(..).collect();
+        sorted.sort_by_key(|a| std::cmp::Reverse(a.started_at));
+        sorted.truncate(50);
+        for item in sorted {
+            recents.push_back(item);
+        }
+    }
+
+    pub async fn get_recent_executions(&self) -> Vec<ExecutionRecord> {
+        let recents = self.recent_executions.read().await;
+        recents.iter().cloned().collect()
+    }
+
+    pub async fn get_execution(&self, job_id: &str) -> Option<ExecutionRecord> {
+        let recents = self.recent_executions.read().await;
+        recents.iter().find(|e| e.id == job_id).cloned()
     }
 
     pub async fn record_tool_invocation(&self, tool_name: &str) {
@@ -791,5 +891,65 @@ mod tests {
         let otel = store.to_opentelemetry_json("amaraki").await;
         assert!(otel.to_string().contains("amaraki.orchestrator"));
         assert!(otel.to_string().contains("amaraki.agent.executions"));
+    }
+
+    #[tokio::test]
+    async fn test_metrics_store_reports_and_k8s_upsert() {
+        let store = MetricsStore::new();
+        let long_prompt = "é".repeat(120);
+        store
+            .record_agent_spawn(
+                "job-pr-1",
+                "antigravity-pr-updater",
+                "gemini-3.1-pro",
+                "#ai",
+                &long_prompt,
+            )
+            .await;
+
+        assert!(!store.has_execution_report("job-pr-1").await);
+        store
+            .record_agent_report(
+                "job-pr-1",
+                true,
+                "Mission accomplie avec succès".to_string(),
+                "PR #12 mise à jour et pushée".to_string(),
+            )
+            .await;
+
+        assert!(store.has_execution_report("job-pr-1").await);
+        let exec = store.get_execution("job-pr-1").await.unwrap();
+        assert_eq!(exec.status, ExecutionStatus::Succeeded);
+        assert_eq!(exec.is_real_success, Some(true));
+        assert_eq!(
+            exec.summary_note.as_deref(),
+            Some("Mission accomplie avec succès")
+        );
+        assert_eq!(
+            exec.report_output.as_deref(),
+            Some("PR #12 mise à jour et pushée")
+        );
+
+        store
+            .upsert_k8s_execution(ExecutionRecord {
+                id: "job-pr-2".to_string(),
+                agent_name: "antigravity-dev".to_string(),
+                model: "gemini-3.1-pro".to_string(),
+                channel: "#ai".to_string(),
+                prompt_preview: "Déployer Iris".to_string(),
+                prompt: "Déployer Iris".to_string(),
+                status: ExecutionStatus::Failed,
+                started_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_secs: Some(18.0),
+                is_real_success: Some(false),
+                summary_note: Some("Échec d'exécution".to_string()),
+                report_output: Some("Erreur test".to_string()),
+            })
+            .await;
+
+        let recents = store.get_recent_executions().await;
+        assert_eq!(recents.len(), 2);
+        assert_eq!(recents[0].id, "job-pr-2");
     }
 }

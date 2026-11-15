@@ -207,6 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/login", get(web::login_html_handler))
         .route("/api/auth/login", post(web::login_handler))
         .route("/metrics", get(web::prometheus_metrics_handler))
+        .route("/api/reports", get(web::agent_reports_handler))
         .route(
             "/api/otel/v1/metrics",
             get(web::opentelemetry_metrics_handler),
@@ -557,6 +558,7 @@ async fn process_agent_request(
                     Some(thread_id.clone()),
                     state.slack_notifier.clone(),
                     state.gradium_tts.clone(),
+                    state.metrics.clone(),
                 );
             }
             Err(e) => {

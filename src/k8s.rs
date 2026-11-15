@@ -629,7 +629,7 @@ pub async fn spawn_agent_job(
             }
         },
         "spec": {
-            "ttlSecondsAfterFinished": 300,
+            "ttlSecondsAfterFinished": 86400,
             "template": {
                 "spec": {
                     "restartPolicy": "Never",
@@ -1125,6 +1125,42 @@ exit $EXIT_CODE
     Ok(job_id)
 }
 
+fn extract_job_metadata(job: &Job) -> (String, String, String, String) {
+    let mut agent_name = job
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|l| l.get("agent-name"))
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut model = "unknown".to_string();
+    let mut channel = "#ai".to_string();
+    let mut prompt = String::new();
+
+    if let Some(container) = job
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|ps| ps.containers.first())
+    {
+        if let Some(envs) = &container.env {
+            for e in envs {
+                if let Some(val) = e.value.as_deref() {
+                    match e.name.as_str() {
+                        "AGENT_NAME" if !val.is_empty() => agent_name = val.to_string(),
+                        "AGENT_MODEL" if !val.is_empty() => model = val.to_string(),
+                        "SLACK_CHANNEL" if !val.is_empty() => channel = val.to_string(),
+                        "USER_PROMPT" => prompt = val.to_string(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    (agent_name, model, channel, prompt)
+}
+
 pub async fn sync_jobs(
     client: &kube::Client,
     ns: &str,
@@ -1145,37 +1181,79 @@ pub async fn sync_jobs(
     };
 
     for job in job_list.items {
-        let name = match job.metadata.name {
+        let name = match job.metadata.name.clone() {
             Some(n) => n,
             None => continue,
         };
 
-        if let Some(status) = job.status {
+        if let Some(ref status) = job.status {
             let succeeded = status.succeeded.unwrap_or(0);
             let failed = status.failed.unwrap_or(0);
 
-            if succeeded > 0 {
-                // Completed successfully
+            if succeeded > 0 || failed > 0 {
+                let k8s_succeeded = succeeded > 0;
                 let duration = if let (Some(start), Some(complete)) =
-                    (status.start_time, status.completion_time)
+                    (&status.start_time, &status.completion_time)
                 {
                     let diff = complete.0.signed_duration_since(start.0);
-                    Some(diff.num_milliseconds() as f64 / 1000.0)
+                    Some((diff.num_milliseconds().max(0) as f64) / 1000.0)
                 } else {
                     None
                 };
-                info!(
-                    "[ACTION] 🏁 Fin de mission Job K8s: '{}' terminé avec SUCCÈS (durée: {:?}s)",
-                    name, duration
-                );
-                metrics.record_agent_completion(&name, true, duration).await;
-            } else if failed > 0 {
-                // Completed with failure
-                tracing::error!(
-                    "[ACTION] 💥 Échec Job K8s: '{}' a ÉCHOUÉ dans le cluster",
-                    name
-                );
-                metrics.record_agent_completion(&name, false, None).await;
+
+                if !metrics.has_execution_report(&name).await {
+                    let (agent_name, model, channel, prompt) = extract_job_metadata(&job);
+                    let raw_logs = get_job_pod_logs(client, ns, &name)
+                        .await
+                        .unwrap_or_default();
+                    let analysis = analyze_agent_mission_result(&raw_logs, k8s_succeeded);
+                    let report_output = if analysis.formatted_output.trim().is_empty() {
+                        "Exécution terminée (logs indisponibles).".to_string()
+                    } else {
+                        analysis.formatted_output
+                    };
+
+                    metrics
+                        .record_agent_completion(&name, analysis.is_real_success, duration)
+                        .await;
+
+                    let started_at = status
+                        .start_time
+                        .as_ref()
+                        .map(|t| t.0)
+                        .unwrap_or_else(chrono::Utc::now);
+                    let completed_at = status.completion_time.as_ref().map(|t| t.0);
+                    let prompt_preview = if prompt.chars().count() > 100 {
+                        let truncated: String = prompt.chars().take(97).collect();
+                        format!("{}...", truncated)
+                    } else {
+                        prompt.clone()
+                    };
+
+                    metrics
+                        .upsert_k8s_execution(crate::metrics::ExecutionRecord {
+                            id: name.clone(),
+                            agent_name,
+                            model,
+                            channel,
+                            prompt_preview,
+                            prompt,
+                            status: if analysis.is_real_success {
+                                crate::metrics::ExecutionStatus::Succeeded
+                            } else {
+                                crate::metrics::ExecutionStatus::Failed
+                            },
+                            started_at,
+                            completed_at,
+                            duration_secs: duration,
+                            is_real_success: Some(analysis.is_real_success),
+                            summary_note: Some(analysis.summary_note),
+                            report_output: Some(report_output),
+                        })
+                        .await;
+                } else {
+                    metrics.record_agent_completion(&name, k8s_succeeded, duration).await;
+                }
             }
         }
     }
@@ -1454,8 +1532,51 @@ pub async fn get_job_pod_logs(
     Ok(String::new())
 }
 
+async fn notify_iris_report(
+    metrics: &MetricsStore,
+    job_id: &str,
+    agent_name: &str,
+    channel: &str,
+    is_real_success: bool,
+    summary_note: &str,
+    report_output: &str,
+) {
+    let iris_url = std::env::var("IRIS_REPORTS_URL")
+        .unwrap_or_else(|_| "http://iris.iris.svc.cluster.local/api/agents/reports".to_string());
+    if iris_url.trim().is_empty() {
+        return;
+    }
+
+    let exec = metrics.get_execution(job_id).await;
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let payload = json!({
+        "id": job_id,
+        "agentName": agent_name,
+        "model": exec.as_ref().map(|e| e.model.clone()).unwrap_or_default(),
+        "channel": channel,
+        "prompt": exec.as_ref().map(|e| e.prompt.clone()).unwrap_or_default(),
+        "status": if is_real_success { "succeeded" } else { "failed" },
+        "isRealSuccess": is_real_success,
+        "summaryNote": summary_note,
+        "reportOutput": report_output,
+        "startedAt": exec.as_ref().map(|e| e.started_at.to_rfc3339()).unwrap_or_else(|| now_iso.clone()),
+        "completedAt": exec.as_ref().and_then(|e| e.completed_at.map(|c| c.to_rfc3339())).unwrap_or(now_iso),
+        "durationSecs": exec.as_ref().and_then(|e| e.duration_secs.map(|d| d.round().max(0.0) as u64)),
+        "updatedAtEpochMs": chrono::Utc::now().timestamp_millis(),
+    });
+
+    if let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        if let Err(e) = client.post(&iris_url).json(&payload).send().await {
+            tracing::debug!("[IRIS] Notification best-effort non aboutie ({}): {}", iris_url, e);
+        }
+    }
+}
+
 /// Surveille la fin d'exécution d'un Job Kubernetes en arrière-plan et publie
-/// le compte-rendu complet (et l'audio TTS si configuré) dans Slack.
+/// le compte-rendu complet (et l'audio TTS si configuré) dans Slack et Iris.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_job_report_watcher(
     client: kube::Client,
@@ -1466,6 +1587,7 @@ pub fn spawn_job_report_watcher(
     thread_ts: Option<String>,
     notifier: std::sync::Arc<crate::slack::SlackNotifier>,
     tts: std::sync::Arc<crate::tts::GradiumTts>,
+    metrics: std::sync::Arc<crate::metrics::MetricsStore>,
 ) {
     tokio::spawn(async move {
         let jobs_api: Api<Job> = Api::namespaced(client.clone(), &ns);
@@ -1486,6 +1608,37 @@ pub fn spawn_job_report_watcher(
                             .await
                             .unwrap_or_default();
                         let analysis = analyze_agent_mission_result(&raw_logs, succeeded > 0);
+                        let duration = if let (Some(start), Some(complete)) =
+                            (status.start_time, status.completion_time)
+                        {
+                            let diff = complete.0.signed_duration_since(start.0);
+                            Some((diff.num_milliseconds().max(0) as f64) / 1000.0)
+                        } else {
+                            None
+                        };
+
+                        metrics
+                            .record_agent_completion(&job_id, analysis.is_real_success, duration)
+                            .await;
+                        metrics
+                            .record_agent_report(
+                                &job_id,
+                                analysis.is_real_success,
+                                analysis.summary_note.clone(),
+                                analysis.formatted_output.clone(),
+                            )
+                            .await;
+
+                        notify_iris_report(
+                            &metrics,
+                            &job_id,
+                            &agent_name,
+                            &channel,
+                            analysis.is_real_success,
+                            &analysis.summary_note,
+                            &analysis.formatted_output,
+                        )
+                        .await;
 
                         let icon = if analysis.is_real_success {
                             "🏁"
