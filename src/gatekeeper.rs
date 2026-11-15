@@ -210,6 +210,7 @@ impl GatekeeperStore {
     /// Formulate 1-2 sentence synthetic summary of the action and select the external agent
     pub fn analyze_intent(text: &str) -> (String, String) {
         let lower = text.to_lowercase();
+        let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
 
         // 0. Détection d'un nom d'agent explicitement ciblé
         if lower.contains("opencode-leclerc") || lower.contains("leclerc-agent") {
@@ -269,19 +270,111 @@ impl GatekeeperStore {
                 "coordonner l'investigation et la réponse à l'incident critique".to_string();
             return (agent, summary);
         }
+        let is_pr_update_request = lower.contains("antigravity-pr-updater")
+            || [
+                "mettre à jour les pr",
+                "mets à jour les pr",
+                "mettre a jour les pr",
+                "mets a jour les pr",
+                "mise à jour des pr",
+                "mise a jour des pr",
+                "update pr",
+                "update les pr",
+                "update des pr",
+                "update de mes pr",
+                "mettre à jour mes projets",
+                "mets à jour mes projets",
+                "mettre a jour mes projets",
+                "mets a jour mes projets",
+                "mise à jour de mes projets",
+                "mise a jour de mes projets",
+                "update de mes projets",
+                "update mes projets",
+                "update de mes projet",
+                "update mes projet",
+                "rebase pr",
+                "merge pr",
+            ]
+            .iter()
+            .any(|p| lower.contains(p))
+            || ((lower.contains("pull request")
+                || words.contains(&"pr")
+                || lower.contains("projet")
+                || lower.contains("github"))
+                && [
+                    "update",
+                    "mettre à jour",
+                    "mets à jour",
+                    "mettre a jour",
+                    "mets a jour",
+                    "mise à jour",
+                    "mise a jour",
+                    "synchronise",
+                    "rebase",
+                ]
+                .iter()
+                .any(|v| lower.contains(v)));
+
+        if is_pr_update_request {
+            let agent = "antigravity-pr-updater".to_string();
+            let summary = "cloner jo3, helmscharts et les dépôts GitHub de JZacharie pour mettre à jour les Pull Requests et projets via Antigravity CLI".to_string();
+            return (agent, summary);
+        }
+
+        let is_agy_dev_request = lower.contains("antigravity-dev")
+            || [
+                "lancer un dev",
+                "lance un dev",
+                "lancer des dev",
+                "lance des dev",
+                "dev avec antigravity",
+                "coder avec antigravity",
+                "développe avec antigravity",
+                "developpe avec antigravity",
+                "clone jo3",
+                "clone helms",
+                "cloner jo3",
+                "cloner helms",
+            ]
+            .iter()
+            .any(|p| lower.contains(p));
+
+        if is_agy_dev_request {
+            let agent = "antigravity-dev".to_string();
+            let summary = "exécuter un développement autonome avec Antigravity CLI sur les dépôts GitHub de JZacharie (jo3, helmscharts, projets)".to_string();
+            return (agent, summary);
+        }
+
         if lower.contains("agent-test-antigravity")
             || lower.contains("antigravity-test")
             || lower.contains("test-antigravity")
             || lower.contains("antigravity-cli")
             || lower.contains("antigravity")
             || lower.contains("agy")
+            || lower.contains("worker-google")
+            || lower.contains("worker google")
+            || lower.contains("workers google")
+            || lower.contains("worker de type google")
+            || lower.contains("workers de type google")
+            || lower.contains("agent google")
+            || lower.contains("agents google")
+            || lower.contains("google worker")
+            || lower.contains("google workers")
+            || lower.contains("google agent")
         {
-            let agent = if lower.contains("test") {
+            let agent = if lower.contains("agent-test")
+                || lower.contains("antigravity-test")
+                || lower.contains("test-antigravity")
+                || ((lower.contains("test") || lower.contains("teste"))
+                    && (lower.contains("agy") || lower.contains("antigravity")))
+            {
                 "agent-test-antigravity".to_string()
+            } else if lower.contains("worker-google") {
+                "worker-google".to_string()
             } else {
                 "antigravity-cli".to_string()
             };
-            let summary = "exécuter la mission via l'agent Antigravity CLI (agy) de la Section 9".to_string();
+            let summary = "exécuter la mission via l'agent Antigravity CLI (agy) de la Section 9 (compte: joseph.zacharie.ai3@gmail.com, secours: joseph.zacharie@gmail.com)".to_string();
             return (agent, summary);
         }
 
@@ -298,7 +391,6 @@ impl GatekeeperStore {
         }
 
         // 2. Mail & Urgences Mails
-        let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
         if lower.contains("mail")
             || lower.contains("email")
             || lower.contains("courriel")
@@ -670,6 +762,33 @@ mod tests {
 
         let (agent, _) = GatekeeperStore::analyze_intent("lance un test avec agy pour valider le profil");
         assert_eq!(agent, "agent-test-antigravity");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("lance un worker de type google pour analyser jo3");
+        assert_eq!(agent, "antigravity-cli");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("appelle les workers google pour tester le cluster");
+        assert_eq!(agent, "antigravity-cli");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("worker-google: valide les manifestes k8s");
+        assert_eq!(agent, "worker-google");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("mets à jour les PR de mes projets github JZacharie");
+        assert_eq!(agent, "antigravity-pr-updater");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("lance les update de mes projets");
+        assert_eq!(agent, "antigravity-pr-updater");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("antigravity-pr-updater: rebase les pull requests de jo3 et helmscharts");
+        assert_eq!(agent, "antigravity-pr-updater");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("lance un dev avec antigravity sur Pylos");
+        assert_eq!(agent, "antigravity-dev");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("lancer des dev avec antigravity sur mon system");
+        assert_eq!(agent, "antigravity-dev");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("antigravity-dev: clone jo3 et helmscharts et ajoute une feature");
+        assert_eq!(agent, "antigravity-dev");
 
         let (agent, _) = GatekeeperStore::analyze_intent("cherche dans la base documentaire et la documentation du cluster");
         assert_eq!(agent, "opencode-mnemosyne");

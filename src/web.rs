@@ -20,6 +20,7 @@ pub struct WebState {
     pub k8s_client: Option<kube::Client>,
     pub agent_runner_image: String,
     pub slack_notifier: Arc<SlackNotifier>,
+    pub gradium_tts: Arc<crate::tts::GradiumTts>,
 }
 
 #[derive(Deserialize)]
@@ -383,10 +384,21 @@ pub async fn test_trigger_handler(
                     "🫡 *Chef Amaraki (Section 9)* : Lancement de l'agent *{}* sur `{}`.\n• *Job K8s* : `{}`\n• *Mission* : \"{}\"",
                     agent_name, channel, job_id, prompt
                 );
-                state
+                let thread_ts = state
                     .slack_notifier
-                    .post_message(&channel, &slack_msg, None)
+                    .post_message_with_ts(&channel, &slack_msg, None)
                     .await;
+
+                crate::k8s::spawn_job_report_watcher(
+                    client.clone(),
+                    state.namespace.clone(),
+                    job_id.clone(),
+                    agent_name.clone(),
+                    channel.clone(),
+                    thread_ts,
+                    state.slack_notifier.clone(),
+                    state.gradium_tts.clone(),
+                );
 
                 (
                     StatusCode::OK,

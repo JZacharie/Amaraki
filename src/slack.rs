@@ -69,6 +69,24 @@ impl SlackNotifier {
         self.token.is_some()
     }
 
+    /// Résout un nom logique de canal AI (`#ai`, `ai`) vers son identifiant Slack (`C...`) si configuré
+    pub fn resolve_channel_id(&self, channel: &str) -> String {
+        let trimmed = channel.trim();
+        if trimmed.eq_ignore_ascii_case("#ai") || trimmed.eq_ignore_ascii_case("ai") {
+            if let Some(ref configured) = self.ai_channel_id {
+                if let Some(id) = configured
+                    .split(',')
+                    .map(|s| s.trim())
+                    .find(|s| s.starts_with('C') || s.starts_with('G'))
+                {
+                    return id.to_string();
+                }
+            }
+            return "C0AC8NGNESY".to_string();
+        }
+        trimmed.to_string()
+    }
+
     /// Vérifie si un identifiant de canal correspond au canal AI (nom ou ID)
     pub async fn is_ai_channel(&self, channel_id: &str) -> bool {
         let trimmed = channel_id.trim();
@@ -245,6 +263,25 @@ impl SlackNotifier {
     }
 
     pub async fn post_message(&self, channel: &str, text: &str, thread_ts: Option<&str>) -> bool {
+        self.post_message_detailed(channel, text, thread_ts).await.0
+    }
+
+    /// Publie un message dans Slack et retourne son `ts` afin de pouvoir chaîner un thread.
+    pub async fn post_message_with_ts(
+        &self,
+        channel: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> Option<String> {
+        self.post_message_detailed(channel, text, thread_ts).await.1
+    }
+
+    async fn post_message_detailed(
+        &self,
+        channel: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> (bool, Option<String>) {
         let token = match &self.token {
             Some(t) => t,
             None => {
@@ -252,12 +289,13 @@ impl SlackNotifier {
                     "[SLACK] Tentative d'envoi sans SLACK_BOT_TOKEN vers '{}'",
                     channel
                 );
-                return false;
+                return (false, None);
             }
         };
 
+        let resolved_channel = self.resolve_channel_id(channel);
         let payload = PostMessagePayload {
-            channel,
+            channel: &resolved_channel,
             text,
             thread_ts,
             username: "Chef Amaraki",
@@ -276,8 +314,15 @@ impl SlackNotifier {
                 if resp.status().is_success() {
                     let v: serde_json::Value = resp.json().await.unwrap_or_default();
                     if v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
-                        info!("[SLACK] 💬 Message envoyé avec succès dans '{}'", channel);
-                        return true;
+                        let ts = v
+                            .get("ts")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string());
+                        info!(
+                            "[SLACK] 💬 Message envoyé avec succès dans '{}'",
+                            resolved_channel
+                        );
+                        return (true, ts);
                     } else {
                         let err_str = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
                         error!(
@@ -289,7 +334,7 @@ impl SlackNotifier {
                         {
                             warn!("[SLACK] ⚠️ Échec avec thread_ts, tentative de repli direct sans thread...");
                             let fallback_payload = PostMessagePayload {
-                                channel,
+                                channel: &resolved_channel,
                                 text,
                                 thread_ts: None,
                                 username: "Chef Amaraki",
@@ -306,8 +351,15 @@ impl SlackNotifier {
                                 let rv: serde_json::Value =
                                     retry_resp.json().await.unwrap_or_default();
                                 if rv.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
-                                    info!("[SLACK] 💬 Message envoyé avec succès (repli hors-thread) dans '{}'", channel);
-                                    return true;
+                                    let ts = rv
+                                        .get("ts")
+                                        .and_then(|t| t.as_str())
+                                        .map(|s| s.to_string());
+                                    info!(
+                                        "[SLACK] 💬 Message envoyé avec succès (repli hors-thread) dans '{}'",
+                                        resolved_channel
+                                    );
+                                    return (true, ts);
                                 }
                             }
                         }
@@ -315,11 +367,11 @@ impl SlackNotifier {
                 } else {
                     error!("[SLACK] ❌ Échec HTTP Slack: {}", resp.status());
                 }
-                false
+                (false, None)
             }
             Err(e) => {
                 error!("[SLACK] ❌ Erreur réseau envoi Slack: {}", e);
-                false
+                (false, None)
             }
         }
     }
@@ -424,6 +476,7 @@ impl SlackNotifier {
         }
 
         // Étape 3 : Finaliser le téléversement et attacher le fichier au canal/thread
+        let resolved_channel = self.resolve_channel_id(channel);
         let complete_payload = serde_json::json!({
             "files": [
                 {
@@ -431,7 +484,7 @@ impl SlackNotifier {
                     "title": title
                 }
             ],
-            "channel_id": channel,
+            "channel_id": resolved_channel,
             "thread_ts": thread_ts
         });
 

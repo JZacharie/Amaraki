@@ -162,6 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         k8s_client: k8s_client.clone(),
         agent_runner_image: agent_runner_image.clone(),
         slack_notifier: slack_notifier.clone(),
+        gradium_tts: gradium_tts.clone(),
     });
 
     // Tâche d'arrière-plan : synchronisation périodique des Jobs Kubernetes et statut
@@ -371,7 +372,7 @@ async fn process_agent_request(
     state: Arc<AppState>,
     event: SlackEventDetail,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let thread_id = event.thread_ts.clone().unwrap_or_else(|| event.ts.clone());
+    let mut thread_id = event.thread_ts.clone().unwrap_or_else(|| event.ts.clone());
     let _session_key = GatekeeperStore::make_key(&event.channel, Some(&thread_id));
 
     let mut instruction_text = event.text.clone().unwrap_or_default();
@@ -472,10 +473,21 @@ async fn process_agent_request(
             agent_name, action_summary
         )
     };
-    state
-        .slack_notifier
-        .post_message(&event.channel, &launch_msg, Some(&thread_id))
-        .await;
+    let is_moshi_trigger = event.user.as_deref() == Some("U_JOE") && event.thread_ts.is_none();
+    if is_moshi_trigger {
+        if let Some(real_ts) = state
+            .slack_notifier
+            .post_message_with_ts(&event.channel, &launch_msg, None)
+            .await
+        {
+            thread_id = real_ts;
+        }
+    } else {
+        state
+            .slack_notifier
+            .post_message(&event.channel, &launch_msg, Some(&thread_id))
+            .await;
+    }
 
     if let Some(ref client) = state.k8s_client {
         let exists =
@@ -536,102 +548,16 @@ async fn process_agent_request(
                     .await;
 
                 // Suivi en arrière-plan de l'exécution et remontée du résultat dans le fil Slack
-                let client_clone = client.clone();
-                let ns_clone = state.namespace.clone();
-                let job_id_clone = job_id.clone();
-                let agent_name_clone = agent_name.clone();
-                let channel_clone = event.channel.clone();
-                let thread_id_clone = thread_id.clone();
-                let notifier_clone = state.slack_notifier.clone();
-                let tts_clone = state.gradium_tts.clone();
-
-                tokio::spawn(async move {
-                    let jobs_api: kube::Api<k8s_openapi::api::batch::v1::Job> =
-                        kube::Api::namespaced(client_clone.clone(), &ns_clone);
-                    let mut attempts = 0;
-                    let max_attempts = 120; // 4 minutes max (120 x 2s)
-
-                    loop {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                        attempts += 1;
-
-                        if let Ok(job) = jobs_api.get(&job_id_clone).await {
-                            if let Some(status) = job.status {
-                                let succeeded = status.succeeded.unwrap_or(0);
-                                let failed = status.failed.unwrap_or(0);
-
-                                if succeeded > 0 || failed > 0 || attempts >= max_attempts {
-                                    // Récupération des logs du pod
-                                    let raw_logs = k8s::get_job_pod_logs(
-                                        &client_clone,
-                                        &ns_clone,
-                                        &job_id_clone,
-                                    )
-                                    .await
-                                    .unwrap_or_default();
-                                    let analysis =
-                                        k8s::analyze_agent_mission_result(&raw_logs, succeeded > 0);
-
-                                    let icon = if analysis.is_real_success {
-                                        "🏁"
-                                    } else {
-                                        "⚠️"
-                                    };
-
-                                    let final_msg = format!(
-                                        "{} *Chef Amaraki* : Compte-rendu de mission pour *{}* (Job: `{}`)\n*Statut* : {}\n\n```\n{}\n```",
-                                        icon, agent_name_clone, job_id_clone, analysis.summary_note, analysis.formatted_output
-                                    );
-
-                                    notifier_clone
-                                        .post_message(
-                                            &channel_clone,
-                                            &final_msg,
-                                            Some(&thread_id_clone),
-                                        )
-                                        .await;
-
-                                    if tts_clone.is_configured() {
-                                        let speech_summary = if !analysis.formatted_output.is_empty() {
-                                            format!(
-                                                "Chef Amaraki : Compte-rendu de mission pour {}. Statut : {}. {}",
-                                                agent_name_clone,
-                                                analysis.summary_note,
-                                                analysis.formatted_output
-                                            )
-                                        } else {
-                                            format!(
-                                                "Chef Amaraki : Compte-rendu de mission pour {}. Statut : {}.",
-                                                agent_name_clone,
-                                                analysis.summary_note
-                                            )
-                                        };
-
-                                        match tts_clone.synthesize(&speech_summary).await {
-                                            Ok(audio_bytes) => {
-                                                notifier_clone
-                                                    .upload_audio(
-                                                        &channel_clone,
-                                                        Some(&thread_id_clone),
-                                                        &audio_bytes,
-                                                        "reponse_amaraki.wav",
-                                                        &format!("Chef Amaraki - {}", agent_name_clone),
-                                                    )
-                                                    .await;
-                                            }
-                                            Err(e) => {
-                                                error!("[TTS] ❌ Erreur synthèse audio Gradium: {:?}", e);
-                                            }
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-                        } else if attempts >= 10 {
-                            break;
-                        }
-                    }
-                });
+                k8s::spawn_job_report_watcher(
+                    client.clone(),
+                    state.namespace.clone(),
+                    job_id.clone(),
+                    agent_name.clone(),
+                    event.channel.clone(),
+                    Some(thread_id.clone()),
+                    state.slack_notifier.clone(),
+                    state.gradium_tts.clone(),
+                );
             }
             Err(e) => {
                 let err_msg = format!(

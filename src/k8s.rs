@@ -329,34 +329,41 @@ pub async fn spawn_agent_job(
         .and_then(|cfg| cfg.model.clone())
         .unwrap_or_else(|| "opencode/free-default-model".to_string());
 
-    // Limitation stricte de la taille du prompt (maîtrise de la consommation de tokens)
-    let bounded_prompt = if prompt.len() > 2000 {
+    // Limitation de la taille du prompt (compatible UTF-8, maîtrise des tokens)
+    let bounded_prompt = if prompt.chars().count() > 4000 {
+        let truncated: String = prompt.chars().take(3950).collect();
         format!(
-            "{}... [contexte plafonné à 2000 caractères]",
-            &prompt[..1950]
+            "{}... [contexte plafonné à 4000 caractères]",
+            truncated
         )
     } else {
         prompt.to_string()
     };
 
-    // Plafond strict d'itérations (2 à 3 tours max d'auto-correction, interdiction des boucles infinies)
+    // Plafond d'itérations (jusqu'à 15 tours pour les agents de dev et de mise à jour de PR)
     let max_iterations = maybe_config
         .as_ref()
         .and_then(|cfg| cfg.max_iterations)
-        .unwrap_or(3)
-        .min(3);
+        .unwrap_or(5)
+        .min(15);
 
     let is_antigravity = maybe_config
         .as_ref()
         .and_then(|cfg| cfg.engine.as_deref())
-        .map(|e| e == "antigravity" || e == "agy")
+        .map(|e| e == "antigravity" || e == "agy" || e == "google")
         .unwrap_or_else(|| {
             safe_agent_name.contains("antigravity")
-                || (model.to_lowercase().contains("gemini") && safe_agent_name.contains("antigravity"))
+                || safe_agent_name.contains("google")
+                || (model.to_lowercase().contains("gemini") && (safe_agent_name.contains("antigravity") || safe_agent_name.contains("google")))
+                || model.to_lowercase().contains("gemini")
+                || model.to_lowercase().starts_with("google/")
         });
 
     let engine = if is_antigravity {
-        "antigravity".to_string()
+        maybe_config
+            .as_ref()
+            .and_then(|cfg| cfg.engine.clone())
+            .unwrap_or_else(|| "antigravity".to_string())
     } else {
         maybe_config
             .as_ref()
@@ -385,10 +392,24 @@ pub async fn spawn_agent_job(
     ];
 
     if is_antigravity {
+        let primary_user = std::env::var("ANTIGRAVITY_USER")
+            .or_else(|_| std::env::var("GOOGLE_EMAIL"))
+            .unwrap_or_else(|_| "joseph.zacharie.ai3@gmail.com".to_string());
+        let fallback_user = std::env::var("ANTIGRAVITY_FALLBACK_USER")
+            .or_else(|_| std::env::var("GOOGLE_FALLBACK_EMAIL"))
+            .unwrap_or_else(|_| "joseph.zacharie@gmail.com".to_string());
+
         let mut antigravity_config = json!({
             "model": &model,
             "thinking": &thinking,
-            "reasoning_effort": thinking.to_lowercase()
+            "reasoning_effort": thinking.to_lowercase(),
+            "user": &primary_user,
+            "account": &primary_user,
+            "fallback_account": &fallback_user,
+            "accounts": [
+                { "email": &primary_user, "is_primary": true },
+                { "email": &fallback_user, "is_fallback": true }
+            ]
         });
         if let Ok(gemini_key) = std::env::var("GEMINI_API_KEY") {
             if !gemini_key.is_empty() {
@@ -398,6 +419,12 @@ pub async fn spawn_agent_job(
         if let Ok(config_str) = serde_json::to_string(&antigravity_config) {
             env_list.push(json!({ "name": "ANTIGRAVITY_CONFIG_CONTENT", "value": config_str }));
         }
+
+        env_list.push(json!({ "name": "ANTIGRAVITY_USER", "value": primary_user.clone() }));
+        env_list.push(json!({ "name": "ANTIGRAVITY_FALLBACK_USER", "value": fallback_user.clone() }));
+        env_list.push(json!({ "name": "GOOGLE_EMAIL", "value": primary_user.clone() }));
+        env_list.push(json!({ "name": "GOOGLE_FALLBACK_EMAIL", "value": fallback_user.clone() }));
+        env_list.push(json!({ "name": "AGY_ACCOUNT", "value": primary_user.clone() }));
     }
 
     if let Ok(token) = std::env::var("SLACK_BOT_TOKEN") {
@@ -532,20 +559,27 @@ pub async fn spawn_agent_job(
         }),
     ];
 
+    let mut seen_secrets = std::collections::HashSet::new();
+    seen_secrets.insert(format!("{}-secret", safe_agent_name));
+
     if is_antigravity {
-        env_from.push(json!({
-            "secretRef": {
-                "name": "antigravity-credentials",
-                "optional": true
+        for sec in ["antigravity-credentials", "amaraki-github-credentials"] {
+            if seen_secrets.insert(sec.to_string()) {
+                env_from.push(json!({
+                    "secretRef": {
+                        "name": sec,
+                        "optional": true
+                    }
+                }));
             }
-        }));
+        }
     }
 
     if let Some(cfg) = &maybe_config {
         if let Some(repos) = &cfg.git_repos {
             for repo in repos {
                 if let Some(ref sec_name) = repo.secret_ref {
-                    if !sec_name.is_empty() {
+                    if !sec_name.is_empty() && seen_secrets.insert(sec_name.clone()) {
                         env_from.push(json!({
                             "secretRef": {
                                 "name": sec_name,
@@ -645,7 +679,7 @@ if [ -n "$OPENCODE_CONFIG_CONTENT" ]; then
 fi
 
 # Preparation et configuration d'Antigravity CLI (agy)
-if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
+if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || [ "$AGENT_ENGINE" = "google" ] || echo "${AGENT_NAME:-}" | grep -qiE "antigravity|google"; then
   mkdir -p ~/.gemini/antigravity-cli ~/.gemini/config ~/.config/antigravity ~/.gemini/antigravity
   if [ -n "$ANTIGRAVITY_CONFIG_CONTENT" ]; then
     printf "%s" "$ANTIGRAVITY_CONFIG_CONTENT" > ~/.gemini/antigravity-cli/settings.json
@@ -660,11 +694,19 @@ try:
         s = json.load(f)
 except Exception:
     s = {}
-u = os.environ.get('ANTIGRAVITY_USER') or os.environ.get('GOOGLE_EMAIL') or 'joseph.zacharie@gmail.com'
+primary_u = os.environ.get('ANTIGRAVITY_USER') or os.environ.get('GOOGLE_EMAIL') or 'joseph.zacharie.ai3@gmail.com'
+fallback_u = os.environ.get('ANTIGRAVITY_FALLBACK_USER') or os.environ.get('GOOGLE_FALLBACK_EMAIL') or 'joseph.zacharie@gmail.com'
 pwd = os.environ.get('ANTIGRAVITY_PASSWORD') or os.environ.get('GOOGLE_PASSWORD')
-s['user'] = u
-s['email'] = u
-s['account'] = u
+fallback_pwd = os.environ.get('ANTIGRAVITY_FALLBACK_PASSWORD') or os.environ.get('GOOGLE_FALLBACK_PASSWORD') or pwd
+
+s['user'] = primary_u
+s['email'] = primary_u
+s['account'] = primary_u
+s['fallback_account'] = fallback_u
+s['accounts'] = [
+    {'email': primary_u, 'is_primary': True},
+    {'email': fallback_u, 'is_fallback': True}
+]
 if pwd:
     s['password'] = pwd
 if 'GEMINI_API_KEY' in os.environ and os.environ.get('GEMINI_API_KEY'):
@@ -694,11 +736,34 @@ for alt in ['~/.config/antigravity/settings.json', '~/.gemini/config/config.json
   fi
 fi
 
-# Vérification et installation automatique de kubectl si absent (diagnostic et remédiation)
+# Vérification et installation automatique des outils CLI (kubectl, gh, helm) si absents
 mkdir -p "$HOME/bin"
+ARCH_UNAME=$(uname -m)
+case "$ARCH_UNAME" in
+  x86_64|amd64) BIN_ARCH="amd64" ;;
+  aarch64|arm64) BIN_ARCH="arm64" ;;
+  *) BIN_ARCH="amd64" ;;
+esac
+
 if ! command -v kubectl >/dev/null 2>&1; then
   echo "[$TS_START] [K8S_INIT] ⚙️ Téléchargement du binaire kubectl..."
-  curl -fsSL -o "$HOME/bin/kubectl" https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl 2>/dev/null && chmod +x "$HOME/bin/kubectl" || true
+  curl -fsSL -o "$HOME/bin/kubectl" "https://dl.k8s.io/release/v1.31.0/bin/linux/${BIN_ARCH}/kubectl" 2>/dev/null && chmod +x "$HOME/bin/kubectl" || true
+fi
+if ! command -v gh >/dev/null 2>&1; then
+  echo "[$TS_START] [GH_INIT] ⚙️ Téléchargement du binaire GitHub CLI (gh)..."
+  GH_VER="2.67.0"
+  curl -fsSL --connect-timeout 15 --max-time 60 "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_${BIN_ARCH}.tar.gz" -o /tmp/gh.tar.gz 2>/dev/null && \
+  tar -xzf /tmp/gh.tar.gz -C /tmp 2>/dev/null && \
+  mv "/tmp/gh_${GH_VER}_linux_${BIN_ARCH}/bin/gh" "$HOME/bin/gh" 2>/dev/null && \
+  chmod +x "$HOME/bin/gh" && rm -rf /tmp/gh* 2>/dev/null || echo "⚠️ Avertissement : échec installation gh CLI"
+fi
+if ! command -v helm >/dev/null 2>&1; then
+  echo "[$TS_START] [HELM_INIT] ⚙️ Téléchargement du binaire Helm..."
+  HELM_VER="v3.17.1"
+  curl -fsSL --connect-timeout 15 --max-time 60 "https://get.helm.sh/helm-${HELM_VER}-linux-${BIN_ARCH}.tar.gz" -o /tmp/helm.tar.gz 2>/dev/null && \
+  tar -xzf /tmp/helm.tar.gz -C /tmp 2>/dev/null && \
+  mv "/tmp/linux-${BIN_ARCH}/helm" "$HOME/bin/helm" 2>/dev/null && \
+  chmod +x "$HOME/bin/helm" && rm -rf /tmp/helm.tar.gz "/tmp/linux-${BIN_ARCH}" 2>/dev/null || echo "⚠️ Avertissement : échec installation helm CLI"
 fi
 export PATH="$HOME/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 
@@ -710,11 +775,33 @@ if command -v git >/dev/null 2>&1 && [ ! -d "$HOME/workspace/.git" ]; then
   git init -q "$HOME/workspace" >/dev/null 2>&1 || true
 fi
 
-# Configuration d'identité Git par défaut pour les commits automatiques
+# Configuration d'identité et d'authentification Git/GitHub globale (clonage dynamique JZacharie)
 git config --global user.name "Amaraki Agent [${AGENT_NAME:-section9}]" >/dev/null 2>&1 || true
 git config --global user.email "amaraki@zacharie.org" >/dev/null 2>&1 || true
+git config --global pull.rebase true >/dev/null 2>&1 || true
+GIT_AUTH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-${GIT_TOKEN:-}}}"
+if [ -n "$GIT_AUTH_TOKEN" ]; then
+  export GITHUB_TOKEN="$GIT_AUTH_TOKEN"
+  export GH_TOKEN="$GIT_AUTH_TOKEN"
+  if command -v gh >/dev/null 2>&1; then
+    gh auth setup-git >/dev/null 2>&1 || true
+  fi
+  python3 -c "
+import os, subprocess
+tok = os.environ.get('GITHUB_TOKEN') or ''
+if tok:
+    cred_path = os.path.expanduser('~/.git-credentials')
+    cred_line = 'https://' + 'x-access-token:' + tok + '@github.com\n'
+    with open(cred_path, 'w') as f:
+        f.write(cred_line)
+    os.chmod(cred_path, 0o600)
+    subprocess.run(['git', 'config', '--global', 'credential.helper', 'store'], check=False)
+    instead_key = 'url.' + 'https://' + 'x-access-token:' + tok + '@github.com/' + '.insteadOf'
+    subprocess.run(['git', 'config', '--global', instead_key, 'git@github.com:'], check=False)
+" 2>/dev/null || true
+fi
 
-# Gestion des dépôts Git (Mémoire, Skills, Configuration MCP, Playbooks)
+# Gestion des dépôts Git (Mémoire, Skills, Configuration MCP, Playbooks, Projets jo3/helmscharts)
 if [ -n "$AGENT_GIT_REPOS" ]; then
   TS_GIT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "[$TS_GIT] [GIT_REPOS_INIT] 📂 Initialisation des dépôts Git configurés..."
@@ -750,15 +837,19 @@ for r in repos:
 
     print(f'==> Synchronisation du repo [{name}] (branche: {branch}) vers {target_dir}...')
     if os.path.exists(target_dir) and os.path.exists(os.path.join(target_dir, '.git')):
+        subprocess.run(['git', 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'], cwd=target_dir, capture_output=True)
         subprocess.run(['git', 'fetch', 'origin'], cwd=target_dir, capture_output=True)
         subprocess.run(['git', 'checkout', branch], cwd=target_dir, capture_output=True)
         subprocess.run(['git', 'pull', '--rebase', 'origin', branch], cwd=target_dir, capture_output=True)
     else:
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
-        res = subprocess.run(['git', 'clone', '--branch', branch, '--depth', '1', clone_url, target_dir], capture_output=True, text=True)
+        res = subprocess.run(['git', 'clone', '--branch', branch, '--no-single-branch', '--depth', '50', clone_url, target_dir], capture_output=True, text=True)
         if res.returncode != 0:
             print(f'⚠️ Échec clone direct (branche {branch}) : {res.stderr.strip()}. Tentative clone standard...')
             subprocess.run(['git', 'clone', clone_url, target_dir], capture_output=True)
+        if os.path.exists(os.path.join(target_dir, '.git')):
+            subprocess.run(['git', 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'], cwd=target_dir, capture_output=True)
+            subprocess.run(['git', 'fetch', 'origin'], cwd=target_dir, capture_output=True)
 
     if os.path.exists(target_dir):
         # 1. Découverte de skills locaux dans le repo
@@ -818,7 +909,7 @@ if [ -n "$AGENT_SKILLS" ]; then
 fi
 
 # Injection des instructions / systemPrompt pour les agents Antigravity CLI
-if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
+if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || [ "$AGENT_ENGINE" = "google" ] || echo "${AGENT_NAME:-}" | grep -qiE "antigravity|google"; then
   python3 -c "
 import os, json
 cfg_path = os.environ.get('AGENT_CONFIG_PATH', '/etc/agent/agent.json')
@@ -846,17 +937,70 @@ if prompt:
 fi
 
 TS_RUN=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || echo "${AGENT_NAME:-}" | grep -qi "antigravity"; then
+if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || [ "$AGENT_ENGINE" = "google" ] || echo "${AGENT_NAME:-}" | grep -qiE "antigravity|google"; then
   echo "[$TS_RUN] [AGENT_EXEC] Execution d'Antigravity CLI (agy)..."
   cd "$HOME/workspace"
-  export AGY_ACCOUNT="${ANTIGRAVITY_USER:-joseph.zacharie@gmail.com}"
+  PRIMARY_ACC="${ANTIGRAVITY_USER:-joseph.zacharie.ai3@gmail.com}"
+  FALLBACK_ACC="${ANTIGRAVITY_FALLBACK_USER:-joseph.zacharie@gmail.com}"
   export GEMINI_API_KEY="${GEMINI_API_KEY:-}"
-  if [ -n "$AGENT_MODEL" ]; then
-    agy --dangerously-skip-permissions --model "$AGENT_MODEL" -p "$USER_PROMPT" || agy --dangerously-skip-permissions -p "$USER_PROMPT"
-  else
-    agy --dangerously-skip-permissions -p "$USER_PROMPT"
+
+  apply_agy_account() {
+    target_acc="$1"
+    export AGY_ACCOUNT="$target_acc"
+    python3 -c "
+import os, json
+acc = '$target_acc'
+for path_str in ['~/.gemini/antigravity-cli/settings.json', '~/.config/antigravity/settings.json', '~/.gemini/config/config.json', '~/.gemini/antigravity/settings.json']:
+    fp = os.path.expanduser(path_str)
+    if os.path.exists(fp):
+        try:
+            with open(fp, 'r') as f:
+                d = json.load(f)
+            d['user'] = acc
+            d['email'] = acc
+            d['account'] = acc
+            with open(fp, 'w') as f:
+                json.dump(d, f, indent=2)
+        except Exception:
+            pass
+" 2>/dev/null || true
+  }
+
+  run_agy_once() {
+    if [ -n "$AGENT_MODEL" ]; then
+      agy --dangerously-skip-permissions --model "$AGENT_MODEL" -p "$USER_PROMPT"
+    else
+      agy --dangerously-skip-permissions -p "$USER_PROMPT"
+    fi
+  }
+
+  echo "[$TS_RUN] [AGENT_EXEC] Démarrage Antigravity avec le compte principal : $PRIMARY_ACC"
+  apply_agy_account "$PRIMARY_ACC"
+
+  TMP_LOG="/tmp/agy_run_$$.log"
+  STATUS_FILE="/tmp/agy_status_$$"
+  rm -f "$STATUS_FILE"
+
+  ( run_agy_once; echo $? > "$STATUS_FILE" ) 2>&1 | tee "$TMP_LOG"
+  EXIT_CODE=$(cat "$STATUS_FILE" 2>/dev/null || echo 1)
+  rm -f "$STATUS_FILE"
+
+  IS_SATURATED=0
+  if grep -qiE "resource_exhausted|quota|429|saturated|saturé|rate.?limit|exhausted|limit exceeded|capacity|overloaded|quota exceeded" "$TMP_LOG" 2>/dev/null; then
+    IS_SATURATED=1
   fi
-  EXIT_CODE=$?
+
+  if [ "$EXIT_CODE" -ne 0 ] || [ "$IS_SATURATED" -eq 1 ]; then
+    TS_FALLBACK=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    echo "⚠️ [$TS_FALLBACK] [AGY_FALLBACK] Détection de saturation ou échec avec le compte principal $PRIMARY_ACC (exit code: $EXIT_CODE, saturé: $IS_SATURATED)."
+    echo "🔄 [$TS_FALLBACK] [AGY_FALLBACK] Bascule automatique vers le compte de secours : $FALLBACK_ACC"
+    apply_agy_account "$FALLBACK_ACC"
+    rm -f "$STATUS_FILE"
+    ( run_agy_once; echo $? > "$STATUS_FILE" ) 2>&1 | tee "$TMP_LOG"
+    EXIT_CODE=$(cat "$STATUS_FILE" 2>/dev/null || echo 1)
+    rm -f "$STATUS_FILE"
+  fi
+  rm -f "$TMP_LOG"
 else
   echo "[$TS_RUN] [AGENT_EXEC] Execution d'OpenCode..."
   if [ -n "$AGENT_MODEL" ]; then
@@ -889,10 +1033,22 @@ for r in repos:
     if not r.get('writable', False):
         continue
     name = r.get('name') or 'repo'
+    url = r.get('url', '')
     branch = r.get('branch') or 'main'
     rel_path = r.get('path') or name
     target_dir = os.path.join(workspace, rel_path)
     if not os.path.exists(target_dir):
+        continue
+
+    is_wiki = (name == 'wiki' or 'amaraki-agent-memory' in url)
+    if not is_wiki and agent_name in ('antigravity-pr-updater', 'antigravity-dev'):
+        print(f'==> Auto-push ignoré pour [{name}] (géré explicitement via branches/PR par {agent_name})')
+        continue
+
+    head_res = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=target_dir, capture_output=True, text=True)
+    current_branch = head_res.stdout.strip()
+    if current_branch and current_branch != branch and not is_wiki:
+        print(f'==> Auto-push ignoré pour [{name}] : branche active {current_branch} != {branch}')
         continue
 
     status = subprocess.run(['git', 'status', '--porcelain'], cwd=target_dir, capture_output=True, text=True)
@@ -905,7 +1061,6 @@ for r in repos:
         # Assure l'URL avec token pour le push
         token_key = r.get('token_key') or r.get('tokenKey') or 'GITHUB_TOKEN'
         token = os.environ.get(token_key) or os.environ.get('GITHUB_TOKEN') or os.environ.get('GIT_TOKEN')
-        url = r.get('url', '')
         if token and 'https://' in url and '@' not in url:
             push_url = url.replace('https://', f'https://x-access-token:{token}@')
             subprocess.run(['git', 'remote', 'set-url', 'origin', push_url], cwd=target_dir)
@@ -1260,10 +1415,11 @@ pub fn format_agent_output(raw_logs: &str) -> String {
 
     let clean = extracted.trim();
     if !clean.is_empty() {
-        if clean.len() > 3000 {
+        if clean.chars().count() > 3000 {
+            let truncated: String = clean.chars().take(2950).collect();
             format!(
                 "{}...\n_[Sortie tronquée à 3000 caractères]_",
-                &clean[..2950]
+                truncated
             )
         } else {
             clean.to_string()
@@ -1296,6 +1452,101 @@ pub async fn get_job_pod_logs(
         }
     }
     Ok(String::new())
+}
+
+/// Surveille la fin d'exécution d'un Job Kubernetes en arrière-plan et publie
+/// le compte-rendu complet (et l'audio TTS si configuré) dans Slack.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_job_report_watcher(
+    client: kube::Client,
+    ns: String,
+    job_id: String,
+    agent_name: String,
+    channel: String,
+    thread_ts: Option<String>,
+    notifier: std::sync::Arc<crate::slack::SlackNotifier>,
+    tts: std::sync::Arc<crate::tts::GradiumTts>,
+) {
+    tokio::spawn(async move {
+        let jobs_api: Api<Job> = Api::namespaced(client.clone(), &ns);
+        let mut attempts = 0;
+        let max_attempts = 450; // 15 minutes max (450 x 2s)
+
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            attempts += 1;
+
+            if let Ok(job) = jobs_api.get(&job_id).await {
+                if let Some(status) = job.status {
+                    let succeeded = status.succeeded.unwrap_or(0);
+                    let failed = status.failed.unwrap_or(0);
+
+                    if succeeded > 0 || failed > 0 || attempts >= max_attempts {
+                        let raw_logs = get_job_pod_logs(&client, &ns, &job_id)
+                            .await
+                            .unwrap_or_default();
+                        let analysis = analyze_agent_mission_result(&raw_logs, succeeded > 0);
+
+                        let icon = if analysis.is_real_success {
+                            "🏁"
+                        } else {
+                            "⚠️"
+                        };
+
+                        let final_msg = format!(
+                            "{} *Chef Amaraki* : Compte-rendu de mission pour *{}* (Job: `{}`)\n*Statut* : {}\n\n```\n{}\n```",
+                            icon,
+                            agent_name,
+                            job_id,
+                            analysis.summary_note,
+                            analysis.formatted_output
+                        );
+
+                        notifier
+                            .post_message(&channel, &final_msg, thread_ts.as_deref())
+                            .await;
+
+                        if tts.is_configured() {
+                            let speech_summary = if !analysis.formatted_output.is_empty() {
+                                format!(
+                                    "Chef Amaraki : Compte-rendu de mission pour {}. Statut : {}. {}",
+                                    agent_name, analysis.summary_note, analysis.formatted_output
+                                )
+                            } else {
+                                format!(
+                                    "Chef Amaraki : Compte-rendu de mission pour {}. Statut : {}.",
+                                    agent_name, analysis.summary_note
+                                )
+                            };
+
+                            match tts.synthesize(&speech_summary).await {
+                                Ok(audio_bytes) => {
+                                    notifier
+                                        .upload_audio(
+                                            &channel,
+                                            thread_ts.as_deref(),
+                                            &audio_bytes,
+                                            "reponse_amaraki.wav",
+                                            &format!("Chef Amaraki - {}", agent_name),
+                                        )
+                                        .await;
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "[TTS] ❌ Erreur synthèse audio Gradium: {:?}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            } else if attempts >= 15 {
+                break;
+            }
+        }
+    });
 }
 
 /// Fallback to seed realistic default agents for local standalone mode or dashboard preview
@@ -1441,6 +1692,107 @@ Tu es l'assistant de Joseph ZACHARIE dédié à la gestion des courses et du pan
             None,
         )
         .await;
+
+    let default_agy_repos = || {
+        vec![
+            AgentGitRepo {
+                url: "https://github.com/JZacharie/jo3.git".to_string(),
+                name: Some("jo3".to_string()),
+                branch: Some("main".to_string()),
+                path: Some("jo3".to_string()),
+                writable: Some(true),
+                secret_ref: Some("amaraki-github-credentials".to_string()),
+                token_key: Some("GITHUB_TOKEN".to_string()),
+            },
+            AgentGitRepo {
+                url: "https://github.com/JZacharie/helmscharts.git".to_string(),
+                name: Some("helmscharts".to_string()),
+                branch: Some("main".to_string()),
+                path: Some("helmscharts".to_string()),
+                writable: Some(true),
+                secret_ref: Some("amaraki-github-credentials".to_string()),
+                token_key: Some("GITHUB_TOKEN".to_string()),
+            },
+            AgentGitRepo {
+                url: "https://github.com/JZacharie/amaraki-agent-memory.git".to_string(),
+                name: Some("wiki".to_string()),
+                branch: Some("main".to_string()),
+                path: Some("wiki".to_string()),
+                writable: Some(true),
+                secret_ref: Some("amaraki-github-credentials".to_string()),
+                token_key: Some("GITHUB_TOKEN".to_string()),
+            },
+        ]
+    };
+
+    let pr_updater_prompt = r#"# Agent « Antigravity PR Updater » Section 9
+Tu es l'agent autonome Antigravity CLI (agy) chargé de mettre à jour les Pull Requests et projets GitHub de JZacharie depuis jo3.
+Tu disposes de `~/workspace/jo3`, `~/workspace/helmscharts`, `~/workspace/wiki`, ainsi que de `gh`, `git`, `helm` et `kubectl` pré-authentifiés.
+Clone dynamiquement tout dépôt `JZacharie/<repo>` nécessaire dans `~/workspace/<repo>`, mets à jour / rebase les PR, exécute les vérifications, pousse les mises à jour et produis un compte-rendu structuré pour Slack."#;
+
+    metrics
+        .register_agent_full(
+            "antigravity-pr-updater",
+            "Gemini 3.8 Flash (Medium)",
+            "Agent Antigravity CLI de mise à jour des PR et projets GitHub de JZacharie (jo3, helmscharts, et dépôts dynamiques)",
+            vec!["git".to_string(), "gh".to_string(), "agy".to_string()],
+            Some(pr_updater_prompt.to_string()),
+            None,
+            Some(12),
+            std::collections::HashMap::new(),
+            Some(vec!["find-skills".to_string()]),
+            Some(default_agy_repos()),
+        )
+        .await;
+
+    let agy_dev_prompt = r#"# Agent « Antigravity Dev » Section 9
+Tu es l'agent développeur autonome propulsé par Antigravity CLI (agy) sur jo3.
+Tu disposes de `~/workspace/jo3`, `~/workspace/helmscharts`, `~/workspace/wiki` et de `gh` / `git` pour cloner tout dépôt `JZacharie/<repo>`, développer des fonctionnalités ou correctifs, lancer les tests/linters, ouvrir ou mettre à jour des Pull Requests et rédiger un rapport concis pour Slack."#;
+
+    metrics
+        .register_agent_full(
+            "antigravity-dev",
+            "Gemini 3.8 Flash (Medium)",
+            "Agent Antigravity CLI de développement autonome sur les dépôts GitHub de JZacharie (features, fixes, PR)",
+            vec!["git".to_string(), "gh".to_string(), "agy".to_string()],
+            Some(agy_dev_prompt.to_string()),
+            None,
+            Some(15),
+            std::collections::HashMap::new(),
+            Some(vec!["find-skills".to_string()]),
+            Some(default_agy_repos()),
+        )
+        .await;
+
+    metrics
+        .register_agent_full(
+            "antigravity-cli",
+            "Gemini 3.8 Flash (Medium)",
+            "Agent Antigravity CLI Section 9 : exécution autonome via agy, pull Git jo3/helmscharts/wiki",
+            vec!["git".to_string(), "gh".to_string(), "agy".to_string()],
+            Some("Agent Antigravity CLI Section 9 opérant sur ~/workspace/jo3, helmscharts et dépôts JZacharie.".to_string()),
+            None,
+            Some(8),
+            std::collections::HashMap::new(),
+            Some(vec!["find-skills".to_string()]),
+            Some(default_agy_repos()),
+        )
+        .await;
+
+    metrics
+        .register_agent_full(
+            "worker-google",
+            "Gemini 3.8 Flash (Medium)",
+            "Worker de type Google (Antigravity CLI / Gemini) : exécution autonome via agy",
+            vec!["git".to_string(), "gh".to_string(), "agy".to_string()],
+            Some("Worker autonome de type Google opérant via Antigravity CLI (agy).".to_string()),
+            None,
+            Some(8),
+            std::collections::HashMap::new(),
+            Some(vec!["find-skills".to_string()]),
+            Some(default_agy_repos()),
+        )
+        .await;
 }
 
 #[cfg(test)]
@@ -1484,6 +1836,27 @@ mod tests {
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0], "find-skills");
         assert_eq!(skills[1], "vercel-labs/skills@find-skills");
+    }
+
+    #[test]
+    fn test_agent_config_deserialization_with_google_engine() {
+        let json_raw = r#"{
+            "name": "worker-google",
+            "description": "Google Worker Agent",
+            "model": "Gemini 3.8 Flash (Medium)",
+            "engine": "google",
+            "thinking": "Medium",
+            "env": {
+                "ANTIGRAVITY_USER": "joseph.zacharie.ai3@gmail.com",
+                "ANTIGRAVITY_FALLBACK_USER": "joseph.zacharie@gmail.com"
+            }
+        }"#;
+
+        let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        assert_eq!(config.name, "worker-google");
+        assert_eq!(config.engine.as_deref(), Some("google"));
+        assert_eq!(config.env.get("ANTIGRAVITY_USER"), Some(&"joseph.zacharie.ai3@gmail.com".to_string()));
+        assert_eq!(config.env.get("ANTIGRAVITY_FALLBACK_USER"), Some(&"joseph.zacharie@gmail.com".to_string()));
     }
 
     #[test]
@@ -1752,5 +2125,36 @@ mod tests {
             config.env.get("MNEMOSYNE_URL").map(String::as_str),
             Some("http://mnemosyne.mnemosyne.svc.cluster.local:8080")
         );
+    }
+
+    #[tokio::test]
+    async fn test_seed_default_agents_includes_antigravity_dev_and_pr_updater() {
+        let store = MetricsStore::new();
+        seed_default_agents(&store).await;
+        for name in [
+            "antigravity-pr-updater",
+            "antigravity-dev",
+            "antigravity-cli",
+            "worker-google",
+        ] {
+            let agent = store
+                .get_agent(name)
+                .await
+                .unwrap_or_else(|| panic!("Missing seeded agent {}", name));
+            let repos = agent.git_repos.expect("git_repos should be present");
+            let repo_names: Vec<&str> = repos.iter().filter_map(|r| r.name.as_deref()).collect();
+            assert!(repo_names.contains(&"jo3"));
+            assert!(repo_names.contains(&"helmscharts"));
+            assert!(repo_names.contains(&"wiki"));
+        }
+    }
+
+    #[test]
+    fn test_format_agent_output_utf8_safe_truncation() {
+        let mut logs = String::from("[AGENT_EXEC] Début\n");
+        logs.push_str(&"é".repeat(3100));
+        logs.push_str("\n[AGENT_COMPLETED] Fin\n");
+        let out = format_agent_output(&logs);
+        assert!(out.contains("Sortie tronquée"));
     }
 }
