@@ -540,6 +540,10 @@ pub async fn spawn_agent_job(
 
         if let Some(servers) = &cfg.mcp_servers {
             opencode_config["mcp"] = build_opencode_mcp_config(servers);
+            let agy_mcp = build_agy_mcp_config(servers);
+            if let Ok(agy_mcp_str) = serde_json::to_string(&agy_mcp) {
+                env_list.push(json!({ "name": "AGY_MCP_CONFIG_CONTENT", "value": agy_mcp_str }));
+            }
         }
 
         if let Ok(config_str) = serde_json::to_string(&opencode_config) {
@@ -726,6 +730,11 @@ if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || [ "$AGE
   if [ -n "$ANTIGRAVITY_CONFIG_CONTENT" ]; then
     printf "%s" "$ANTIGRAVITY_CONFIG_CONTENT" > ~/.gemini/antigravity-cli/settings.json
     printf "%s" "$ANTIGRAVITY_CONFIG_CONTENT" > ~/.config/antigravity/settings.json
+  fi
+  if [ -n "$AGY_MCP_CONFIG_CONTENT" ]; then
+    printf "%s" "$AGY_MCP_CONFIG_CONTENT" > ~/.gemini/config/mcp_config.json
+    printf "%s" "$AGY_MCP_CONFIG_CONTENT" > ~/.gemini/antigravity/mcp_config.json
+    printf "%s" "$AGY_MCP_CONFIG_CONTENT" > ~/.gemini/antigravity-cli/mcp_config.json
   fi
 
   python3 -c "
@@ -1362,6 +1371,33 @@ pub fn build_opencode_mcp_config(servers: &[McpServerConfig]) -> serde_json::Val
     }
 
     serde_json::Value::Object(mcp_map)
+}
+
+/// Construit le fichier `mcp_config.json` attendu par Antigravity CLI (`agy`).
+pub fn build_agy_mcp_config(servers: &[McpServerConfig]) -> serde_json::Value {
+    let mut mcp_servers = serde_json::Map::new();
+
+    for s in servers {
+        let entry = if let Some(ref url) = s.url {
+            json!({
+                "serverUrl": url
+            })
+        } else {
+            let mut obj = serde_json::Map::new();
+            if let Some(ref c) = s.command {
+                obj.insert("command".to_string(), json!(c));
+            }
+            if !s.args.is_empty() {
+                obj.insert("args".to_string(), json!(s.args));
+            }
+            serde_json::Value::Object(obj)
+        };
+        mcp_servers.insert(s.name.clone(), entry);
+    }
+
+    json!({
+        "mcpServers": mcp_servers
+    })
 }
 
 /// Contrôles statiques d'une déclaration de serveur MCP, sans contact avec le

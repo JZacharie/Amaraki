@@ -390,6 +390,13 @@ impl GatekeeperStore {
             return (agent, summary);
         }
 
+        // 1b. Amazon Alexa & Liste de courses Alexa
+        if lower.contains("alexa") || lower.contains("amazon") {
+            let agent = "opencode-alexa".to_string();
+            let summary = "consulter et gérer la liste de courses Amazon Alexa via alexa-mcp".to_string();
+            return (agent, summary);
+        }
+
         // 2. Mail & Urgences Mails
         if lower.contains("mail")
             || lower.contains("email")
