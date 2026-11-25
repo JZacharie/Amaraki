@@ -237,6 +237,27 @@ pub async fn discover_all_agents(
     Ok(count)
 }
 
+/// Build an OpenCode provider entry for the local Lemonade / llama-cpp endpoint.
+fn build_llama_cpp_provider(model_id: &str) -> serde_json::Value {
+    let llama_key = std::env::var("LLAMA_API_KEY").unwrap_or_else(|_| "sk-local".to_string());
+    let llama_url = std::env::var("LLAMA_BASE_URL")
+        .unwrap_or_else(|_| "http://192.168.0.58:13305/v1".to_string());
+
+    json!({
+        "name": "Llama-CPP",
+        "npm": "@ai-sdk/openai-compatible",
+        "options": {
+            "baseURL": llama_url,
+            "apiKey": llama_key
+        },
+        "models": {
+            model_id: {
+                "name": model_id
+            }
+        }
+    })
+}
+
 /// Architecture on which every Amaraki-piloted Job is pinned by default.
 pub const DEFAULT_AGENT_NODE_ARCH: &str = "amd64";
 
@@ -490,29 +511,19 @@ pub async fn spawn_agent_job(
                             "name": model_id
                         }
                     }
-                }
+                },
+                "llama-cpp": build_llama_cpp_provider("Qwen3.5-9B-GGUF")
             });
-        } else if model.starts_with("llama-cpp/") {
-            let model_id = model.trim_start_matches("llama-cpp/");
-            let llama_key = std::env::var("LLAMA_API_KEY")
-                .unwrap_or_else(|_| "ENC[SYM256,salt:jLNxPjPQllmoiuDdP4Wfjw==,iv:baU1h5iaSnitREyt5kGFIg==,tag:aXxUIOlub4UNKORlxfnCbVpyI1sm2Ku/VVOesatXJy4=,data:xVT6HIbQFSh2dU1KZ2FCIRUcG/p0NNkd3ioXPWlcMuGVyqFGxl/A9SLl5X3sJKLnW7t3L8oFfer6]".to_string());
-            let llama_url = std::env::var("LLAMA_BASE_URL")
-                .unwrap_or_else(|_| "http://llama-cpp.llama-cpp.svc:8080/v1".to_string());
+            env_list.push(json!({ "name": "FALLBACK_OPENCODE_MODEL", "value": "llama-cpp/Qwen3.5-9B-GGUF" }));
+        } else if model.starts_with("llama-cpp/") || model.starts_with("llama/") {
+            let model_id = model
+                .strip_prefix("llama-cpp/")
+                .or_else(|| model.strip_prefix("llama/"))
+                .unwrap_or(&model);
 
+            opencode_config["model"] = json!(format!("llama-cpp/{}", model_id));
             opencode_config["provider"] = json!({
-                "llama-cpp": {
-                    "name": "Llama-CPP",
-                    "npm": "@ai-sdk/openai-compatible",
-                    "options": {
-                        "baseURL": llama_url,
-                        "apiKey": llama_key
-                    },
-                    "models": {
-                        model_id: {
-                            "name": model_id
-                        }
-                    }
-                }
+                "llama-cpp": build_llama_cpp_provider(model_id)
             });
         }
 
@@ -617,6 +628,35 @@ pub async fn spawn_agent_job(
     // Force l'architecture des Jobs pilotés par Amaraki (amd64 par défaut).
     let node_selector = agent_node_selector();
 
+    let mut volume_mounts = vec![json!({
+        "name": "agent-config",
+        "mountPath": "/etc/agent",
+        "readOnly": true
+    })];
+    let mut volumes = vec![json!({
+        "name": "agent-config",
+        "configMap": {
+            "name": configmap_vol_name
+        }
+    })];
+
+    if is_antigravity {
+        let auth_pvc = std::env::var("ANTIGRAVITY_AUTH_PVC")
+            .unwrap_or_else(|_| "antigravity-auth-pvc".to_string());
+        if !auth_pvc.is_empty() {
+            volume_mounts.push(json!({
+                "name": "antigravity-auth",
+                "mountPath": "/mnt/antigravity-auth"
+            }));
+            volumes.push(json!({
+                "name": "antigravity-auth",
+                "persistentVolumeClaim": {
+                    "claimName": auth_pvc
+                }
+            }));
+        }
+    }
+
     let job_manifest: Job = serde_json::from_value(json!({
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -629,6 +669,7 @@ pub async fn spawn_agent_job(
             }
         },
         "spec": {
+            "activeDeadlineSeconds": 600,
             "ttlSecondsAfterFinished": 86400,
             "template": {
                 "spec": {
@@ -645,6 +686,7 @@ pub async fn spawn_agent_job(
                     "containers": [{
                         "name": "opencode-agent",
                         "image": agent_runner_image,
+                        "imagePullPolicy": "IfNotPresent",
                         "command": ["/bin/sh", "-c"],
                         "args": [
                             r#"
@@ -709,11 +751,15 @@ s['accounts'] = [
 ]
 if pwd:
     s['password'] = pwd
-if 'GEMINI_API_KEY' in os.environ and os.environ.get('GEMINI_API_KEY'):
+auth_dir = os.path.join('/mnt/antigravity-auth', primary_u)
+has_oauth = os.path.exists(os.path.join(auth_dir, 'antigravity-cli')) or os.path.exists(os.path.join(auth_dir, 'keyrings'))
+use_api_key = os.environ.get('ANTIGRAVITY_USE_API_KEY', '').lower() == 'true'
+if (use_api_key or not has_oauth) and os.environ.get('GEMINI_API_KEY'):
     s['apiKey'] = os.environ.get('GEMINI_API_KEY')
     s['modelProvider'] = 'gemini'
-elif 'GEMINI_API_KEY' not in os.environ and 'modelProvider' in s:
-    del s['modelProvider']
+else:
+    s.pop('modelProvider', None)
+    s.pop('apiKey', None)
 os.makedirs(os.path.dirname(p), exist_ok=True)
 with open(p, 'w') as f:
     json.dump(s, f, indent=2)
@@ -896,8 +942,8 @@ if [ -n "$AGENT_SKILLS" ]; then
   mkdir -p ~/.agents/skills ~/.config/opencode/skills
   for skill in $AGENT_SKILLS; do
     case "$skill" in
-      findskill)
-        target_skill="find-skills"
+      findskill|find-skills)
+        target_skill="vercel-labs/skills@find-skills"
         ;;
       *)
         target_skill="$skill"
@@ -947,9 +993,28 @@ if [ "$AGENT_ENGINE" = "antigravity" ] || [ "$AGENT_ENGINE" = "agy" ] || [ "$AGE
   apply_agy_account() {
     target_acc="$1"
     export AGY_ACCOUNT="$target_acc"
+    AUTH_ROOT="/mnt/antigravity-auth/$target_acc"
+    if [ -d "$AUTH_ROOT/antigravity-cli" ] || [ -d "$AUTH_ROOT/keyrings" ]; then
+      echo "[$TS_RUN] [AGY_AUTH] 🔑 Session Google OAuth détectée pour $target_acc sur PVC."
+      if [ -d "$AUTH_ROOT/antigravity-cli" ]; then
+        mkdir -p "$HOME/.gemini/antigravity-cli"
+        cp -a "$AUTH_ROOT/antigravity-cli/." "$HOME/.gemini/antigravity-cli/" 2>/dev/null || true
+      fi
+      if [ -d "$AUTH_ROOT/config-antigravity" ]; then
+        mkdir -p "$HOME/.config/antigravity"
+        cp -a "$AUTH_ROOT/config-antigravity/." "$HOME/.config/antigravity/" 2>/dev/null || true
+      fi
+      if [ -d "$AUTH_ROOT/keyrings" ]; then
+        mkdir -p "$HOME/.local/share/keyrings"
+        cp -a "$AUTH_ROOT/keyrings/." "$HOME/.local/share/keyrings/" 2>/dev/null || true
+      fi
+      unset GEMINI_API_KEY
+    fi
     python3 -c "
 import os, json
 acc = '$target_acc'
+auth_root = '/mnt/antigravity-auth/' + acc
+has_oauth = os.path.exists(os.path.join(auth_root, 'antigravity-cli')) or os.path.exists(os.path.join(auth_root, 'keyrings'))
 for path_str in ['~/.gemini/antigravity-cli/settings.json', '~/.config/antigravity/settings.json', '~/.gemini/config/config.json', '~/.gemini/antigravity/settings.json']:
     fp = os.path.expanduser(path_str)
     if os.path.exists(fp):
@@ -959,6 +1024,9 @@ for path_str in ['~/.gemini/antigravity-cli/settings.json', '~/.config/antigravi
             d['user'] = acc
             d['email'] = acc
             d['account'] = acc
+            if has_oauth:
+                d.pop('modelProvider', None)
+                d.pop('apiKey', None)
             with open(fp, 'w') as f:
                 json.dump(d, f, indent=2)
         except Exception:
@@ -1003,12 +1071,19 @@ for path_str in ['~/.gemini/antigravity-cli/settings.json', '~/.config/antigravi
   rm -f "$TMP_LOG"
 else
   echo "[$TS_RUN] [AGENT_EXEC] Execution d'OpenCode..."
+  RUN_TIMEOUT="${AGENT_TIMEOUT:-240}"
   if [ -n "$AGENT_MODEL" ]; then
-    opencode run -m "$AGENT_MODEL" "$USER_PROMPT" || opencode run "$USER_PROMPT"
+    timeout "$RUN_TIMEOUT" opencode run --auto -m "$AGENT_MODEL" "$USER_PROMPT" < /dev/null
+    EXIT_CODE=$?
+    if [ "$EXIT_CODE" -ne 0 ] && [ -n "$FALLBACK_OPENCODE_MODEL" ]; then
+      echo "⚠️ [AGENT_FALLBACK] Échec/timeout avec $AGENT_MODEL (code $EXIT_CODE), bascule vers $FALLBACK_OPENCODE_MODEL..."
+      timeout "$RUN_TIMEOUT" opencode run --auto -m "$FALLBACK_OPENCODE_MODEL" "$USER_PROMPT" < /dev/null
+      EXIT_CODE=$?
+    fi
   else
-    opencode run "$USER_PROMPT"
+    timeout "$RUN_TIMEOUT" opencode run --auto "$USER_PROMPT" < /dev/null
+    EXIT_CODE=$?
   fi
-  EXIT_CODE=$?
 fi
 
 # Sauvegarde / Push des modifications (Mémoire & Pouvoirs) si configuré
@@ -1093,18 +1168,9 @@ exit $EXIT_CODE
                         },
                         "env": env_list,
                         "envFrom": env_from,
-                        "volumeMounts": [{
-                            "name": "agent-config",
-                            "mountPath": "/etc/agent",
-                            "readOnly": true
-                        }]
+                        "volumeMounts": volume_mounts
                     }],
-                    "volumes": [{
-                        "name": "agent-config",
-                        "configMap": {
-                            "name": configmap_vol_name
-                        }
-                    }]
+                    "volumes": volumes
                 }
             }
         }
