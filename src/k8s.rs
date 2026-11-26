@@ -1255,11 +1255,22 @@ pub async fn sync_jobs(
         }
     };
 
+    let mut active_k8s_jobs = std::collections::HashSet::new();
+
     for job in job_list.items {
         let name = match job.metadata.name.clone() {
             Some(n) => n,
             None => continue,
         };
+
+        let is_finished = job
+            .status
+            .as_ref()
+            .map(|s| s.succeeded.unwrap_or(0) > 0 || s.failed.unwrap_or(0) > 0)
+            .unwrap_or(false);
+        if !is_finished {
+            active_k8s_jobs.insert(name.clone());
+        }
 
         if let Some(ref status) = job.status {
             let succeeded = status.succeeded.unwrap_or(0);
@@ -1332,6 +1343,8 @@ pub async fn sync_jobs(
             }
         }
     }
+
+    metrics.reconcile_running_jobs(&active_k8s_jobs).await;
 
     Ok(())
 }

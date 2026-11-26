@@ -427,6 +427,47 @@ impl MetricsStore {
         }
     }
 
+    /// Reconcile in-memory `Running` executions against the set of Jobs still
+    /// active in Kubernetes. Any execution still marked `Running` whose Job was
+    /// deleted or garbage-collected externally (after a 30s creation grace period)
+    /// is marked `Failed`, and every agent's `running_count` is recomputed.
+    pub async fn reconcile_running_jobs(&self, active_k8s_jobs: &std::collections::HashSet<String>) {
+        let now = chrono::Utc::now();
+        let grace = chrono::Duration::seconds(30);
+        let mut live_counts: HashMap<String, u64> = HashMap::new();
+
+        {
+            let mut recents = self.recent_executions.write().await;
+            for exec in recents.iter_mut() {
+                if exec.status == ExecutionStatus::Running {
+                    if !active_k8s_jobs.contains(&exec.id)
+                        && now.signed_duration_since(exec.started_at) > grace
+                    {
+                        exec.status = ExecutionStatus::Failed;
+                        exec.completed_at = Some(now);
+                        let dur = (now
+                            .signed_duration_since(exec.started_at)
+                            .num_milliseconds()
+                            .max(0) as f64)
+                            / 1000.0;
+                        exec.duration_secs = Some(dur);
+                        exec.is_real_success = Some(false);
+                        exec.summary_note = Some(
+                            "Job Kubernetes supprimé ou expiré avant complétion".to_string(),
+                        );
+                    } else {
+                        *live_counts.entry(exec.agent_name.clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let mut agents = self.agent_stats.write().await;
+        for (name, entry) in agents.iter_mut() {
+            entry.running_count = *live_counts.get(name).unwrap_or(&0);
+        }
+    }
+
     pub async fn record_agent_report(
         &self,
         job_id: &str,
@@ -951,5 +992,42 @@ mod tests {
         let recents = store.get_recent_executions().await;
         assert_eq!(recents.len(), 2);
         assert_eq!(recents[0].id, "job-pr-2");
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_running_jobs_clears_orphaned_running_count() {
+        let store = MetricsStore::new();
+        store
+            .register_agent("opencode-leclerc", "Gemini 3.8 Flash (Medium)", "Leclerc", vec![])
+            .await;
+
+        // Simulate an orphaned Running job older than the 30s grace period
+        store
+            .upsert_k8s_execution(ExecutionRecord {
+                id: "job-orphan".to_string(),
+                agent_name: "opencode-leclerc".to_string(),
+                model: "Gemini 3.8 Flash (Medium)".to_string(),
+                channel: "#ai".to_string(),
+                prompt_preview: "test".to_string(),
+                prompt: "test".to_string(),
+                status: ExecutionStatus::Running,
+                started_at: Utc::now() - chrono::Duration::seconds(60),
+                completed_at: None,
+                duration_secs: None,
+                is_real_success: None,
+                summary_note: None,
+                report_output: None,
+            })
+            .await;
+
+        let empty_k8s = std::collections::HashSet::new();
+        store.reconcile_running_jobs(&empty_k8s).await;
+
+        let exec = store.get_execution("job-orphan").await.unwrap();
+        assert_eq!(exec.status, ExecutionStatus::Failed);
+        assert_eq!(exec.is_real_success, Some(false));
+
+        let snap = store.get_dashboard_summary("amaraki").await;
+        assert_eq!(snap.agents_running, 0);
     }
 }
