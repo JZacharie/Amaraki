@@ -72,13 +72,38 @@ pub async fn dashboard_stats_handler(State(state): State<Arc<WebState>>) -> impl
     Json(summary)
 }
 
-// Public agent mission & upgrade reports API (consumed by Iris)
-pub async fn agent_reports_handler(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+// Agent mission & upgrade reports API (public for cluster-local Iris, auth required externally)
+pub async fn agent_reports_handler(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    let client_ip = crate::auth::extract_client_ip(&headers);
+    if client_ip != "cluster-local" {
+        let is_authed = if let Some(token) = crate::auth::extract_session_cookie(&headers) {
+            state.auth.validate_token(&token).await.is_some()
+        } else if let Some(token) = crate::auth::extract_bearer_token(&headers) {
+            state.auth.validate_api_key(&token) || state.auth.validate_token(&token).await.is_some()
+        } else if let Some((user, pass)) = crate::auth::extract_basic_auth(&headers) {
+            state.auth.validate_credentials(&user, &pass)
+        } else {
+            false
+        };
+
+        if !is_authed {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "Authentification requise" })),
+            )
+                .into_response();
+        }
+    }
+
     let reports = state.metrics.get_recent_executions().await;
     Json(serde_json::json!({
         "status": "ok",
         "reports": reports
     }))
+    .into_response()
 }
 
 // Agent configuration JSON export API

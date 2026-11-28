@@ -196,7 +196,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/me", get(web::auth_me_handler))
         .route("/api/agents/test-trigger", post(web::test_trigger_handler))
         .route("/api/agents/callback", post(web::agent_callback_handler))
-        .route("/api/reports", get(web::agent_reports_handler))
         .route("/api/slack/send", post(web::slack_send_handler))
         .route_layer(middleware::from_fn(move |req, next| {
             let auth = auth_layer_clone.clone();
@@ -212,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/login", get(web::login_html_handler))
         .route("/api/auth/login", post(web::login_handler))
         .route("/metrics", get(web::prometheus_metrics_handler))
+        .route("/api/reports", get(web::agent_reports_handler))
         .route(
             "/api/otel/v1/metrics",
             get(web::opentelemetry_metrics_handler),
@@ -323,20 +323,37 @@ async fn handle_slack_event(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    if let Ok(secret) = std::env::var("SLACK_SIGNING_SECRET") {
-        if !secret.trim().is_empty() {
-            let ts = headers
-                .get("x-slack-request-timestamp")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            let sig = headers
-                .get("x-slack-signature")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            let now_secs = chrono::Utc::now().timestamp();
-            if !verify_slack_signature(&secret, ts, sig, &body, now_secs) {
-                warn!("[SECURITY] ⛔ Signature Slack invalide ou expirée sur /slack/events");
-                return Err(StatusCode::UNAUTHORIZED);
+    let client_ip = auth::extract_client_ip(&headers);
+    let enforce_sig = std::env::var("AMARAKI_ENFORCE_SLACK_SIGNATURE")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    if client_ip != "cluster-local" {
+        if let Ok(secret) = std::env::var("SLACK_SIGNING_SECRET") {
+            let trimmed_secret = secret.trim();
+            if !trimmed_secret.is_empty() {
+                let ts = headers
+                    .get("x-slack-request-timestamp")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let sig = headers
+                    .get("x-slack-signature")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let now_secs = chrono::Utc::now().timestamp();
+                if !verify_slack_signature(trimmed_secret, ts, sig, &body, now_secs) {
+                    if enforce_sig {
+                        warn!(
+                            "[SECURITY] ⛔ Signature Slack invalide ou expirée sur /slack/events (ip: {})",
+                            client_ip
+                        );
+                        return Err(StatusCode::UNAUTHORIZED);
+                    }
+                    warn!(
+                        "[SECURITY] ⚠️ Signature Slack invalide ou absente sur /slack/events (ip: {}, mode permissif)",
+                        client_ip
+                    );
+                }
             }
         }
     }
