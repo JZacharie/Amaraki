@@ -431,7 +431,10 @@ impl MetricsStore {
     /// active in Kubernetes. Any execution still marked `Running` whose Job was
     /// deleted or garbage-collected externally (after a 30s creation grace period)
     /// is marked `Failed`, and every agent's `running_count` is recomputed.
-    pub async fn reconcile_running_jobs(&self, active_k8s_jobs: &std::collections::HashSet<String>) {
+    pub async fn reconcile_running_jobs(
+        &self,
+        active_k8s_jobs: &std::collections::HashSet<String>,
+    ) {
         let now = chrono::Utc::now();
         let grace = chrono::Duration::seconds(30);
         let mut live_counts: HashMap<String, u64> = HashMap::new();
@@ -452,9 +455,8 @@ impl MetricsStore {
                             / 1000.0;
                         exec.duration_secs = Some(dur);
                         exec.is_real_success = Some(false);
-                        exec.summary_note = Some(
-                            "Job Kubernetes supprimé ou expiré avant complétion".to_string(),
-                        );
+                        exec.summary_note =
+                            Some("Job Kubernetes supprimé ou expiré avant complétion".to_string());
                     } else {
                         *live_counts.entry(exec.agent_name.clone()).or_insert(0) += 1;
                     }
@@ -998,7 +1000,12 @@ mod tests {
     async fn test_reconcile_running_jobs_clears_orphaned_running_count() {
         let store = MetricsStore::new();
         store
-            .register_agent("opencode-leclerc", "Gemini 3.8 Flash (Medium)", "Leclerc", vec![])
+            .register_agent(
+                "opencode-leclerc",
+                "Gemini 3.8 Flash (Medium)",
+                "Leclerc",
+                vec![],
+            )
             .await;
 
         // Simulate an orphaned Running job older than the 30s grace period

@@ -1,10 +1,14 @@
 use axum::{
+    body::Bytes,
     extract::State,
+    http::{HeaderMap, StatusCode},
     middleware,
     routing::{get, post},
     Json, Router,
 };
+use hmac::{Hmac, Mac};
 use serde::Deserialize;
+use sha2::Sha256;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info, info_span, warn, Instrument};
@@ -192,6 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/me", get(web::auth_me_handler))
         .route("/api/agents/test-trigger", post(web::test_trigger_handler))
         .route("/api/agents/callback", post(web::agent_callback_handler))
+        .route("/api/reports", get(web::agent_reports_handler))
         .route("/api/slack/send", post(web::slack_send_handler))
         .route_layer(middleware::from_fn(move |req, next| {
             let auth = auth_layer_clone.clone();
@@ -207,7 +212,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/login", get(web::login_html_handler))
         .route("/api/auth/login", post(web::login_handler))
         .route("/metrics", get(web::prometheus_metrics_handler))
-        .route("/api/reports", get(web::agent_reports_handler))
         .route(
             "/api/otel/v1/metrics",
             get(web::opentelemetry_metrics_handler),
@@ -262,10 +266,84 @@ fn debug_log_sync_error(e: &kube::Error) {
     tracing::debug!("Sync jobs K8s: {}", e);
 }
 
+/// Vérifie la signature HMAC-SHA256 (`X-Slack-Signature` + `X-Slack-Request-Timestamp`)
+/// envoyée par Slack pour prévenir l'usurpation et le rejeu (> 5 minutes).
+pub fn verify_slack_signature(
+    signing_secret: &str,
+    timestamp_str: &str,
+    signature_header: &str,
+    body: &[u8],
+    now_secs: i64,
+) -> bool {
+    let ts: i64 = match timestamp_str.trim().parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if (now_secs - ts).abs() > 300 {
+        return false;
+    }
+
+    let sig_hex = match signature_header.trim().strip_prefix("v0=") {
+        Some(h) => h,
+        None => return false,
+    };
+    let sig_bytes = match hex::decode(sig_hex) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+
+    let mut mac = match Hmac::<Sha256>::new_from_slice(signing_secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(b"v0:");
+    mac.update(timestamp_str.trim().as_bytes());
+    mac.update(b":");
+    mac.update(body);
+    mac.verify_slice(&sig_bytes).is_ok()
+}
+
+pub fn is_audio_or_video_file(file: &SlackFileDetail) -> bool {
+    let mime = file.mimetype.as_deref().unwrap_or("");
+    let name = file.name.as_deref().unwrap_or("");
+    let lower_name = name.to_lowercase();
+    mime.starts_with("audio/")
+        || mime.starts_with("video/")
+        || lower_name.ends_with(".mp3")
+        || lower_name.ends_with(".wav")
+        || lower_name.ends_with(".m4a")
+        || lower_name.ends_with(".ogg")
+        || lower_name.ends_with(".mp4")
+        || lower_name.ends_with(".mov")
+        || lower_name.ends_with(".webm")
+}
+
 async fn handle_slack_event(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<SlackEventPayload>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if let Ok(secret) = std::env::var("SLACK_SIGNING_SECRET") {
+        if !secret.trim().is_empty() {
+            let ts = headers
+                .get("x-slack-request-timestamp")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let sig = headers
+                .get("x-slack-signature")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let now_secs = chrono::Utc::now().timestamp();
+            if !verify_slack_signature(&secret, ts, sig, &body, now_secs) {
+                warn!("[SECURITY] ⛔ Signature Slack invalide ou expirée sur /slack/events");
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+    }
+
+    let payload: SlackEventPayload =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+
     // Challenge Slack URL verification
     if payload.r#type == "url_verification" {
         if let Some(challenge) = payload.challenge {
@@ -295,19 +373,7 @@ async fn handle_slack_event(
         );
 
         // Détection de fichiers audio ou vidéo
-        let has_audio_video = event.files.iter().any(|f| {
-            let mime = f.mimetype.as_deref().unwrap_or("");
-            let name = f.name.as_deref().unwrap_or("");
-            mime.starts_with("audio/")
-                || mime.starts_with("video/")
-                || name.ends_with(".mp3")
-                || name.ends_with(".wav")
-                || name.ends_with(".m4a")
-                || name.ends_with(".ogg")
-                || name.ends_with(".mp4")
-                || name.ends_with(".mov")
-                || name.ends_with(".webm")
-        });
+        let has_audio_video = event.files.iter().any(is_audio_or_video_file);
 
         let should_trigger = state
             .gatekeeper
@@ -323,8 +389,9 @@ async fn handle_slack_event(
             .await;
 
         if should_trigger {
-            let prompt_preview = if text_content.len() > 80 {
-                format!("{}...", &text_content[..77])
+            let prompt_preview = if text_content.chars().count() > 80 {
+                let truncated: String = text_content.chars().take(77).collect();
+                format!("{}...", truncated)
             } else {
                 text_content.clone()
             };
@@ -381,14 +448,8 @@ async fn process_agent_request(
     // 1. Traitement des médias (fichiers audio ou vidéo)
     let mut has_audio = false;
     for file in &event.files {
-        let mime = file.mimetype.as_deref().unwrap_or("");
         let name = file.name.as_deref().unwrap_or("media.mp3");
-        if mime.starts_with("audio/")
-            || mime.starts_with("video/")
-            || name.ends_with(".mp3")
-            || name.ends_with(".wav")
-            || name.ends_with(".m4a")
-        {
+        if is_audio_or_video_file(file) {
             has_audio = true;
             if let Some(download_url) = file
                 .url_private_download
@@ -619,4 +680,61 @@ async fn process_agent_request(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_verify_slack_signature_valid_and_invalid() {
+        let secret = "test_slack_signing_secret";
+        let ts = "1700000000";
+        let body = br#"{"type":"url_verification","challenge":"abc"}"#;
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(b"v0:");
+        mac.update(ts.as_bytes());
+        mac.update(b":");
+        mac.update(body);
+        let sig = format!("v0={}", hex::encode(mac.finalize().into_bytes()));
+
+        assert!(verify_slack_signature(secret, ts, &sig, body, 1700000010));
+        assert!(!verify_slack_signature(
+            secret,
+            ts,
+            "v0=deadbeef",
+            body,
+            1700000010
+        ));
+        assert!(!verify_slack_signature(secret, ts, &sig, body, 1700000500));
+    }
+
+    #[test]
+    fn test_is_audio_or_video_file_extensions() {
+        for ext in [".mp3", ".wav", ".m4a", ".ogg", ".mp4", ".mov", ".webm"] {
+            let f = SlackFileDetail {
+                id: "F1".to_string(),
+                name: Some(format!("voice{}", ext)),
+                mimetype: None,
+                filetype: None,
+                url_private_download: None,
+                url_private: None,
+            };
+            assert!(
+                is_audio_or_video_file(&f),
+                "Expected {} to be detected",
+                ext
+            );
+        }
+        let txt = SlackFileDetail {
+            id: "F2".to_string(),
+            name: Some("notes.txt".to_string()),
+            mimetype: Some("text/plain".to_string()),
+            filetype: None,
+            url_private_download: None,
+            url_private: None,
+        };
+        assert!(!is_audio_or_video_file(&txt));
+    }
 }

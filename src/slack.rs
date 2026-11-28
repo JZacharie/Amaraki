@@ -314,10 +314,7 @@ impl SlackNotifier {
                 if resp.status().is_success() {
                     let v: serde_json::Value = resp.json().await.unwrap_or_default();
                     if v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
-                        let ts = v
-                            .get("ts")
-                            .and_then(|t| t.as_str())
-                            .map(|s| s.to_string());
+                        let ts = v.get("ts").and_then(|t| t.as_str()).map(|s| s.to_string());
                         info!(
                             "[SLACK] 💬 Message envoyé avec succès dans '{}'",
                             resolved_channel
@@ -405,13 +402,7 @@ impl SlackNotifier {
             audio_bytes.len()
         );
 
-        let step1_resp = match self
-            .client
-            .get(&get_url)
-            .bearer_auth(token)
-            .send()
-            .await
-        {
+        let step1_resp = match self.client.get(&get_url).bearer_auth(token).send().await {
             Ok(r) => r,
             Err(e) => {
                 error!("[SLACK] ❌ Échec files.getUploadURLExternal: {}", e);
@@ -422,12 +413,19 @@ impl SlackNotifier {
         let step1_json: serde_json::Value = match step1_resp.json().await {
             Ok(j) => j,
             Err(e) => {
-                error!("[SLACK] ❌ Erreur parsing réponse getUploadURLExternal: {}", e);
+                error!(
+                    "[SLACK] ❌ Erreur parsing réponse getUploadURLExternal: {}",
+                    e
+                );
                 return false;
             }
         };
 
-        if !step1_json.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
+        if !step1_json
+            .get("ok")
+            .and_then(|o| o.as_bool())
+            .unwrap_or(false)
+        {
             error!(
                 "[SLACK] ❌ Échec API files.getUploadURLExternal: {:?}",
                 step1_json.get("error")
@@ -506,12 +504,19 @@ impl SlackNotifier {
         let step3_json: serde_json::Value = match step3_resp.json().await {
             Ok(j) => j,
             Err(e) => {
-                error!("[SLACK] ❌ Erreur parsing files.completeUploadExternal: {}", e);
+                error!(
+                    "[SLACK] ❌ Erreur parsing files.completeUploadExternal: {}",
+                    e
+                );
                 return false;
             }
         };
 
-        if step3_json.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
+        if step3_json
+            .get("ok")
+            .and_then(|o| o.as_bool())
+            .unwrap_or(false)
+        {
             info!(
                 "[SLACK] 🎙️ Audio envoyé avec succès dans '{}' (thread: {:?}, file_id: {})",
                 channel, thread_ts, file_id

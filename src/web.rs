@@ -275,7 +275,7 @@ pub async fn logout_handler(
     }
     // Also clear legacy cookie if present
     if let Ok(legacy_clear) =
-        header::HeaderValue::from_str("amaraki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+        header::HeaderValue::from_str("aramaki_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
     {
         response
             .headers_mut()
@@ -376,6 +376,42 @@ pub async fn test_trigger_handler(
     );
 
     if let Some(ref client) = state.k8s_client {
+        match crate::k8s::check_agent_configmap_exists(client, &state.namespace, &agent_name).await
+        {
+            Ok(false) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "error": format!("ConfigMap de l'agent '{}' introuvable dans '{}'", agent_name, state.namespace)
+                    })),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "error": e.to_string()
+                    })),
+                );
+            }
+            Ok(true) => {}
+        }
+
+        let mcp_warnings =
+            crate::k8s::check_agent_mcp_readiness(client, &state.namespace, &agent_name).await;
+        if !mcp_warnings.is_empty() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "mcp_unavailable",
+                    "error": "Serveurs MCP requis indisponibles",
+                    "warnings": mcp_warnings
+                })),
+            );
+        }
+
         match crate::k8s::spawn_agent_job(
             client,
             &state.namespace,

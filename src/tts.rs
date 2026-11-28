@@ -23,8 +23,8 @@ impl GradiumTts {
             .ok()
             .filter(|k| !k.trim().is_empty());
 
-        let voice_id = std::env::var("GRADIUM_VOICE_ID")
-            .unwrap_or_else(|_| "ZvbRby2gYSWbfLyP".to_string());
+        let voice_id =
+            std::env::var("GRADIUM_VOICE_ID").unwrap_or_else(|_| "ZvbRby2gYSWbfLyP".to_string());
 
         let url = std::env::var("GRADIUM_URL")
             .unwrap_or_else(|_| "https://api.gradium.ai/api/post/speech/tts".to_string());
@@ -62,7 +62,10 @@ impl GradiumTts {
         while let Some(start) = text.find("```") {
             if let Some(end) = text[start + 3..].find("```") {
                 let actual_end = start + 3 + end + 3;
-                text.replace_range(start..actual_end, " détail technique disponible dans le fil. ");
+                text.replace_range(
+                    start..actual_end,
+                    " détail technique disponible dans le fil. ",
+                );
             } else {
                 text.replace_range(start.., "");
                 break;
@@ -114,14 +117,15 @@ impl GradiumTts {
         // 6. Compactage des espaces multiples
         let mut result = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
 
-        // Limite à ~450 caractères pour garder la réponse vocale percutante et rapide
-        if result.len() > 450 {
-            if let Some(last_period) = result[..450].rfind(['.', '!', '?']) {
-                result.truncate(last_period + 1);
+        // Limite à ~450 caractères pour garder la réponse vocale percutante et rapide (UTF-8 safe)
+        if result.chars().count() > 450 {
+            let mut truncated: String = result.chars().take(450).collect();
+            if let Some(last_period) = truncated.rfind(['.', '!', '?']) {
+                truncated.truncate(last_period + 1);
             } else {
-                result.truncate(450);
-                result.push('.');
+                truncated.push('.');
             }
+            result = truncated;
         }
 
         result
@@ -154,9 +158,10 @@ impl GradiumTts {
         info!(
             "[TTS] 🗣️ Synthèse vocale Gradium en cours (voix: {}, {} car): \"{}\"",
             self.voice_id,
-            speech_text.len(),
-            if speech_text.len() > 60 {
-                format!("{}...", &speech_text[..57])
+            speech_text.chars().count(),
+            if speech_text.chars().count() > 60 {
+                let preview: String = speech_text.chars().take(57).collect();
+                format!("{}...", preview)
             } else {
                 speech_text.clone()
             }
@@ -174,10 +179,7 @@ impl GradiumTts {
         if !resp.status().is_success() {
             let status = resp.status();
             let err_body = resp.text().await.unwrap_or_default();
-            error!(
-                "[TTS] ❌ Échec API Gradium (HTTP {}): {}",
-                status, err_body
-            );
+            error!("[TTS] ❌ Échec API Gradium (HTTP {}): {}", status, err_body);
             return Err(format!("Gradium TTS failed with HTTP {}: {}", status, err_body).into());
         }
 
@@ -213,5 +215,13 @@ mod tests {
     fn test_default_voice_and_config() {
         let tts = GradiumTts::new();
         assert_eq!(tts.voice_id(), "ZvbRby2gYSWbfLyP");
+    }
+
+    #[test]
+    fn test_clean_text_for_speech_utf8_truncation_no_panic() {
+        let raw = "é".repeat(600);
+        let cleaned = GradiumTts::clean_text_for_speech(&raw);
+        assert!(cleaned.chars().count() <= 451);
+        assert!(cleaned.ends_with('.'));
     }
 }

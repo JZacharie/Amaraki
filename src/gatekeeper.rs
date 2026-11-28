@@ -129,7 +129,7 @@ impl GatekeeperStore {
 
         // Condition 1b: Contains direct mention or keyword @amaraki / amaraki
         let lower = text.to_lowercase();
-        if lower.contains("amaraki") || lower.contains("amaraki") {
+        if lower.contains("amaraki") || lower.contains("aramaki") {
             return true;
         }
 
@@ -213,6 +213,12 @@ impl GatekeeperStore {
         let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
 
         // 0. Détection d'un nom d'agent explicitement ciblé
+        if lower.contains("opencode-alexa") || lower.contains("alexa-agent") {
+            let agent = "opencode-alexa".to_string();
+            let summary =
+                "consulter et gérer la liste de courses Amazon Alexa via alexa-mcp".to_string();
+            return (agent, summary);
+        }
         if lower.contains("opencode-leclerc") || lower.contains("leclerc-agent") {
             let agent = "opencode-leclerc".to_string();
             let summary = "consulter le statut du panier Leclerc Drive, préparer ou valider la liste de courses".to_string();
@@ -254,14 +260,20 @@ impl GatekeeperStore {
                     .to_string();
             return (agent, summary);
         }
-        if lower.contains("opencode-openobserve") || lower.contains("openobserve") || lower.contains("open-observe") {
+        if lower.contains("opencode-openobserve")
+            || lower.contains("openobserve")
+            || lower.contains("open-observe")
+        {
             let agent = "opencode-openobserve".to_string();
-            let summary = "consulter et analyser les logs, métriques et traces sur OpenObserve".to_string();
+            let summary =
+                "consulter et analyser les logs, métriques et traces sur OpenObserve".to_string();
             return (agent, summary);
         }
         if lower.contains("opencode-mnemosyne") || lower.contains("mnemosyne-agent") {
             let agent = "opencode-mnemosyne".to_string();
-            let summary = "interroger la base documentaire Mnemosyne RAG et produire une synthèse sourcée".to_string();
+            let summary =
+                "interroger la base documentaire Mnemosyne RAG et produire une synthèse sourcée"
+                    .to_string();
             return (agent, summary);
         }
         if lower.contains("agent-incident-responder") || lower.contains("incident-responder") {
@@ -378,7 +390,15 @@ impl GatekeeperStore {
             return (agent, summary);
         }
 
-        // 1. Leclerc Drive & Courses
+        // 1. Amazon Alexa & Liste de courses Alexa (avant Leclerc car "courses" est partagé)
+        if lower.contains("alexa") || lower.contains("amazon") {
+            let agent = "opencode-alexa".to_string();
+            let summary =
+                "consulter et gérer la liste de courses Amazon Alexa via alexa-mcp".to_string();
+            return (agent, summary);
+        }
+
+        // 1b. Leclerc Drive & Courses
         if lower.contains("leclerc")
             || lower.contains("panier")
             || lower.contains("course")
@@ -387,13 +407,6 @@ impl GatekeeperStore {
         {
             let agent = "opencode-leclerc".to_string();
             let summary = "consulter le statut du panier Leclerc Drive, vérifier son contenu, préparer ou valider la liste de courses".to_string();
-            return (agent, summary);
-        }
-
-        // 1b. Amazon Alexa & Liste de courses Alexa
-        if lower.contains("alexa") || lower.contains("amazon") {
-            let agent = "opencode-alexa".to_string();
-            let summary = "consulter et gérer la liste de courses Amazon Alexa via alexa-mcp".to_string();
             return (agent, summary);
         }
 
@@ -495,8 +508,9 @@ impl GatekeeperStore {
 
         // 6. Default / Agent général
         let agent = "agent-code-reviewer".to_string();
-        let prompt_preview = if text.len() > 80 {
-            format!("{}...", &text[..77])
+        let prompt_preview = if text.chars().count() > 80 {
+            let truncated: String = text.chars().take(77).collect();
+            format!("{}...", truncated)
         } else {
             text.to_string()
         };
@@ -742,7 +756,9 @@ mod tests {
         let (agent, _) = GatekeeperStore::analyze_intent("corrige le cluster jo3 avec opencode");
         assert_eq!(agent, "opencode-cluster-remediator");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("opencode-cluster-remediator: répare les pods en erreur");
+        let (agent, _) = GatekeeperStore::analyze_intent(
+            "opencode-cluster-remediator: répare les pods en erreur",
+        );
         assert_eq!(agent, "opencode-cluster-remediator");
 
         let (agent, _) = GatekeeperStore::analyze_intent("fais une review du code de la PR");
@@ -760,44 +776,76 @@ mod tests {
         assert_eq!(agent, "opencode-deezer");
 
         // Mnemosyne RAG
-        let (agent, _) = GatekeeperStore::analyze_intent("opencode-mnemosyne: cherche la doc sur k8s");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("opencode-mnemosyne: cherche la doc sur k8s");
         assert_eq!(agent, "opencode-mnemosyne");
 
         // Antigravity CLI & Test
         let (agent, _) = GatekeeperStore::analyze_intent("antigravity-cli: vérifie le dépôt jo3");
         assert_eq!(agent, "antigravity-cli");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("lance un test avec agy pour valider le profil");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("lance un test avec agy pour valider le profil");
         assert_eq!(agent, "agent-test-antigravity");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("lance un worker de type google pour analyser jo3");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("lance un worker de type google pour analyser jo3");
         assert_eq!(agent, "antigravity-cli");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("appelle les workers google pour tester le cluster");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("appelle les workers google pour tester le cluster");
         assert_eq!(agent, "antigravity-cli");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("worker-google: valide les manifestes k8s");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("worker-google: valide les manifestes k8s");
         assert_eq!(agent, "worker-google");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("mets à jour les PR de mes projets github JZacharie");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("mets à jour les PR de mes projets github JZacharie");
         assert_eq!(agent, "antigravity-pr-updater");
 
         let (agent, _) = GatekeeperStore::analyze_intent("lance les update de mes projets");
         assert_eq!(agent, "antigravity-pr-updater");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("antigravity-pr-updater: rebase les pull requests de jo3 et helmscharts");
+        let (agent, _) = GatekeeperStore::analyze_intent(
+            "antigravity-pr-updater: rebase les pull requests de jo3 et helmscharts",
+        );
         assert_eq!(agent, "antigravity-pr-updater");
 
         let (agent, _) = GatekeeperStore::analyze_intent("lance un dev avec antigravity sur Pylos");
         assert_eq!(agent, "antigravity-dev");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("lancer des dev avec antigravity sur mon system");
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("lancer des dev avec antigravity sur mon system");
         assert_eq!(agent, "antigravity-dev");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("antigravity-dev: clone jo3 et helmscharts et ajoute une feature");
+        let (agent, _) = GatekeeperStore::analyze_intent(
+            "antigravity-dev: clone jo3 et helmscharts et ajoute une feature",
+        );
         assert_eq!(agent, "antigravity-dev");
 
-        let (agent, _) = GatekeeperStore::analyze_intent("cherche dans la base documentaire et la documentation du cluster");
+        let (agent, _) = GatekeeperStore::analyze_intent(
+            "cherche dans la base documentaire et la documentation du cluster",
+        );
         assert_eq!(agent, "opencode-mnemosyne");
+    }
+
+    #[test]
+    fn test_analyze_intent_alexa_and_utf8_safety() {
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("opencode-alexa: consulte ma liste de courses");
+        assert_eq!(agent, "opencode-alexa");
+
+        let (agent, _) =
+            GatekeeperStore::analyze_intent("ajoute du lait sur ma liste de courses Alexa");
+        assert_eq!(agent, "opencode-alexa");
+
+        let (agent, _) = GatekeeperStore::analyze_intent("fais les courses au drive Leclerc");
+        assert_eq!(agent, "opencode-leclerc");
+
+        let utf8_prompt = "é".repeat(120);
+        let (agent, summary) = GatekeeperStore::analyze_intent(&utf8_prompt);
+        assert_eq!(agent, "agent-code-reviewer");
+        assert!(summary.contains("..."));
     }
 }

@@ -54,6 +54,8 @@ pub struct McpServerConfig {
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
     /// Délai maximal (en millisecondes) accordé par OpenCode pour charger les
     /// outils du serveur MCP. Indispensable pour les serveurs locaux
     /// (`npx`/`uvx`) : leur premier démarrage à froid dépasse le délai par
@@ -146,12 +148,24 @@ pub async fn get_agent_config(
                                 })
                                 .unwrap_or_default();
                             let timeout = s_val.get("timeout").and_then(|t| t.as_u64());
+                            let headers = s_val
+                                .get("headers")
+                                .and_then(|h| h.as_object())
+                                .map(|obj| {
+                                    obj.iter()
+                                        .filter_map(|(k, v)| {
+                                            v.as_str().map(|vs| (k.clone(), vs.to_string()))
+                                        })
+                                        .collect::<std::collections::HashMap<String, String>>()
+                                })
+                                .filter(|m| !m.is_empty());
                             mcp_servers.push(McpServerConfig {
                                 name: s_name.clone(),
                                 server_type: s_type,
                                 url,
                                 command,
                                 args,
+                                headers,
                                 timeout,
                             });
                         }
@@ -353,10 +367,7 @@ pub async fn spawn_agent_job(
     // Limitation de la taille du prompt (compatible UTF-8, maîtrise des tokens)
     let bounded_prompt = if prompt.chars().count() > 4000 {
         let truncated: String = prompt.chars().take(3950).collect();
-        format!(
-            "{}... [contexte plafonné à 4000 caractères]",
-            truncated
-        )
+        format!("{}... [contexte plafonné à 4000 caractères]", truncated)
     } else {
         prompt.to_string()
     };
@@ -375,7 +386,9 @@ pub async fn spawn_agent_job(
         .unwrap_or_else(|| {
             safe_agent_name.contains("antigravity")
                 || safe_agent_name.contains("google")
-                || (model.to_lowercase().contains("gemini") && (safe_agent_name.contains("antigravity") || safe_agent_name.contains("google")))
+                || (model.to_lowercase().contains("gemini")
+                    && (safe_agent_name.contains("antigravity")
+                        || safe_agent_name.contains("google")))
                 || model.to_lowercase().contains("gemini")
                 || model.to_lowercase().starts_with("google/")
         });
@@ -442,7 +455,8 @@ pub async fn spawn_agent_job(
         }
 
         env_list.push(json!({ "name": "ANTIGRAVITY_USER", "value": primary_user.clone() }));
-        env_list.push(json!({ "name": "ANTIGRAVITY_FALLBACK_USER", "value": fallback_user.clone() }));
+        env_list
+            .push(json!({ "name": "ANTIGRAVITY_FALLBACK_USER", "value": fallback_user.clone() }));
         env_list.push(json!({ "name": "GOOGLE_EMAIL", "value": primary_user.clone() }));
         env_list.push(json!({ "name": "GOOGLE_FALLBACK_EMAIL", "value": fallback_user.clone() }));
         env_list.push(json!({ "name": "AGY_ACCOUNT", "value": primary_user.clone() }));
@@ -471,8 +485,8 @@ pub async fn spawn_agent_job(
         // Détection et injection automatique du provider LLM (litellm, strata, llama-cpp)
         if model.starts_with("litellm/") {
             let model_id = model.trim_start_matches("litellm/");
-            let litellm_key = std::env::var("LITELLM_API_KEY")
-                .unwrap_or_else(|_| "sk-litellm".to_string());
+            let litellm_key =
+                std::env::var("LITELLM_API_KEY").unwrap_or_else(|_| "sk-litellm".to_string());
             let litellm_url = std::env::var("LITELLM_BASE_URL")
                 .unwrap_or_else(|_| "http://litellm.litellm.svc.cluster.local:4000/v1".to_string());
 
@@ -493,8 +507,8 @@ pub async fn spawn_agent_job(
             });
         } else if model.starts_with("strata/") {
             let model_id = model.trim_start_matches("strata/");
-            let strata_key = std::env::var("STRATA_API_KEY")
-                .unwrap_or_else(|_| "sk-strata-local".to_string());
+            let strata_key =
+                std::env::var("STRATA_API_KEY").unwrap_or_else(|_| "sk-strata-local".to_string());
             let strata_url = std::env::var("STRATA_BASE_URL")
                 .unwrap_or_else(|_| "http://192.168.0.58:8081/v1".to_string());
 
@@ -514,7 +528,9 @@ pub async fn spawn_agent_job(
                 },
                 "llama-cpp": build_llama_cpp_provider("Qwen3.5-9B-GGUF")
             });
-            env_list.push(json!({ "name": "FALLBACK_OPENCODE_MODEL", "value": "llama-cpp/Qwen3.5-9B-GGUF" }));
+            env_list.push(
+                json!({ "name": "FALLBACK_OPENCODE_MODEL", "value": "llama-cpp/Qwen3.5-9B-GGUF" }),
+            );
         } else if model.starts_with("llama-cpp/") || model.starts_with("llama/") {
             let model_id = model
                 .strip_prefix("llama-cpp/")
@@ -530,7 +546,10 @@ pub async fn spawn_agent_job(
         // Injection de l'URL Mnemosyne RAG par défaut pour tous les agents
         let mnemosyne_url = std::env::var("MNEMOSYNE_URL")
             .unwrap_or_else(|_| "http://mnemosyne.mnemosyne.svc.cluster.local:8080".to_string());
-        if !env_list.iter().any(|e| e.get("name").and_then(|n| n.as_str()) == Some("MNEMOSYNE_URL")) {
+        if !env_list
+            .iter()
+            .any(|e| e.get("name").and_then(|n| n.as_str()) == Some("MNEMOSYNE_URL"))
+        {
             env_list.push(json!({ "name": "MNEMOSYNE_URL", "value": mnemosyne_url }));
         }
 
@@ -1338,7 +1357,9 @@ pub async fn sync_jobs(
                         })
                         .await;
                 } else {
-                    metrics.record_agent_completion(&name, k8s_succeeded, duration).await;
+                    metrics
+                        .record_agent_completion(&name, k8s_succeeded, duration)
+                        .await;
                 }
             }
         }
@@ -1360,10 +1381,16 @@ pub fn build_opencode_mcp_config(servers: &[McpServerConfig]) -> serde_json::Val
 
     for s in servers {
         let mut entry = if let Some(ref url) = s.url {
-            json!({
+            let mut obj = json!({
                 "type": "remote",
                 "url": url
-            })
+            });
+            if let Some(ref headers) = s.headers {
+                if !headers.is_empty() {
+                    obj["headers"] = json!(headers);
+                }
+            }
+            obj
         } else {
             let mut cmd = Vec::new();
             if let Some(c) = &s.command {
@@ -1392,9 +1419,14 @@ pub fn build_agy_mcp_config(servers: &[McpServerConfig]) -> serde_json::Value {
 
     for s in servers {
         let entry = if let Some(ref url) = s.url {
-            json!({
-                "serverUrl": url
-            })
+            let mut obj = serde_json::Map::new();
+            obj.insert("serverUrl".to_string(), json!(url));
+            if let Some(ref headers) = s.headers {
+                if !headers.is_empty() {
+                    obj.insert("headers".to_string(), json!(headers));
+                }
+            }
+            serde_json::Value::Object(obj)
         } else {
             let mut obj = serde_json::Map::new();
             if let Some(ref c) = s.command {
@@ -1499,7 +1531,10 @@ pub async fn check_agent_mcp_readiness(
                                                 warnings.push(format!("Serveur MCP `{}` (`{}`) : Aucun Pod actif/prêt derrière le Service `{}/{}` !", s.name, url, svc_ns, svc_name));
                                             }
                                         }
-                                        Err(kube::Error::Api(ref api_err)) if api_err.code == 403 || api_err.reason == "Forbidden" => {
+                                        Err(kube::Error::Api(ref api_err))
+                                            if api_err.code == 403
+                                                || api_err.reason == "Forbidden" =>
+                                        {
                                             tracing::warn!(
                                                 "[MCP-CHECK] Droits RBAC insuffisants pour inspecter les endpoints de `{}/{}` (HTTP 403)",
                                                 svc_ns, svc_name
@@ -1513,13 +1548,17 @@ pub async fn check_agent_mcp_readiness(
                                         }
                                     }
                                 }
-                                Err(kube::Error::Api(ref api_err)) if api_err.code == 404 || api_err.reason == "NotFound" => {
+                                Err(kube::Error::Api(ref api_err))
+                                    if api_err.code == 404 || api_err.reason == "NotFound" =>
+                                {
                                     warnings.push(format!(
                                         "Serveur MCP `{}` (`{}`) : Service K8s `{}/{}` introuvable !",
                                         s.name, url, svc_ns, svc_name
                                     ));
                                 }
-                                Err(kube::Error::Api(ref api_err)) if api_err.code == 403 || api_err.reason == "Forbidden" => {
+                                Err(kube::Error::Api(ref api_err))
+                                    if api_err.code == 403 || api_err.reason == "Forbidden" =>
+                                {
                                     tracing::warn!(
                                         "[MCP-CHECK] Droits RBAC insuffisants pour vérifier le Service K8s `{}/{}` (HTTP 403 - ignoré pour ne pas bloquer)",
                                         svc_ns, svc_name
@@ -1610,10 +1649,7 @@ pub fn format_agent_output(raw_logs: &str) -> String {
     if !clean.is_empty() {
         if clean.chars().count() > 3000 {
             let truncated: String = clean.chars().take(2950).collect();
-            format!(
-                "{}...\n_[Sortie tronquée à 3000 caractères]_",
-                truncated
-            )
+            format!("{}...\n_[Sortie tronquée à 3000 caractères]_", truncated)
         } else {
             clean.to_string()
         }
@@ -1685,7 +1721,11 @@ async fn notify_iris_report(
         .build()
     {
         if let Err(e) = client.post(&iris_url).json(&payload).send().await {
-            tracing::debug!("[IRIS] Notification best-effort non aboutie ({}): {}", iris_url, e);
+            tracing::debug!(
+                "[IRIS] Notification best-effort non aboutie ({}): {}",
+                iris_url,
+                e
+            );
         }
     }
 }
@@ -1873,6 +1913,7 @@ Analyser les pull requests et le code source, vérifier le respect des bonnes pr
         url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
         command: None,
         args: vec![],
+        headers: None,
         timeout: Some(30000),
     }];
 
@@ -1943,6 +1984,7 @@ Tu es l'assistant de Joseph ZACHARIE dédié à la gestion des courses et du pan
         url: Some("http://leclerc-mcp.leclerc-mcp.svc.cluster.local:8080/sse".to_string()),
         command: None,
         args: vec![],
+        headers: None,
         timeout: Some(30000),
     }];
 
@@ -2123,8 +2165,14 @@ mod tests {
         let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
         assert_eq!(config.name, "worker-google");
         assert_eq!(config.engine.as_deref(), Some("google"));
-        assert_eq!(config.env.get("ANTIGRAVITY_USER"), Some(&"joseph.zacharie.ai3@gmail.com".to_string()));
-        assert_eq!(config.env.get("ANTIGRAVITY_FALLBACK_USER"), Some(&"joseph.zacharie@gmail.com".to_string()));
+        assert_eq!(
+            config.env.get("ANTIGRAVITY_USER"),
+            Some(&"joseph.zacharie.ai3@gmail.com".to_string())
+        );
+        assert_eq!(
+            config.env.get("ANTIGRAVITY_FALLBACK_USER"),
+            Some(&"joseph.zacharie@gmail.com".to_string())
+        );
     }
 
     #[test]
@@ -2162,7 +2210,10 @@ mod tests {
         assert_eq!(config.name, "agent-git-aware");
         let repos = config.git_repos.expect("git_repos should be present");
         assert_eq!(repos.len(), 1);
-        assert_eq!(repos[0].url, "https://github.com/jzacharie/agent-memory.git");
+        assert_eq!(
+            repos[0].url,
+            "https://github.com/jzacharie/agent-memory.git"
+        );
         assert_eq!(repos[0].name.as_deref(), Some("memory"));
         assert_eq!(repos[0].branch.as_deref(), Some("main"));
         assert_eq!(repos[0].path.as_deref(), Some("memory"));
@@ -2186,7 +2237,10 @@ mod tests {
 
         let config: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
         let repos = config.git_repos.expect("git_repos should be present");
-        assert_eq!(repos[0].secret_ref.as_deref(), Some("amaraki-github-credentials"));
+        assert_eq!(
+            repos[0].secret_ref.as_deref(),
+            Some("amaraki-github-credentials")
+        );
         assert_eq!(repos[0].token_key.as_deref(), Some("GITHUB_TOKEN"));
     }
 
@@ -2252,6 +2306,7 @@ mod tests {
                 "@modelcontextprotocol/server-filesystem".to_string(),
                 "/home/developer/workspace".to_string(),
             ],
+            headers: None,
             timeout: Some(60000),
         };
         assert!(validate_mcp_server_config(&server).is_empty());
@@ -2269,6 +2324,7 @@ mod tests {
                 "--repository".to_string(),
                 "/home/developer/workspace".to_string(),
             ],
+            headers: None,
             timeout: Some(60000),
         };
         assert!(validate_mcp_server_config(&server).is_empty());
@@ -2282,6 +2338,7 @@ mod tests {
             url: None,
             command: None,
             args: vec![],
+            headers: None,
             timeout: None,
         };
         let warnings = validate_mcp_server_config(&server);
@@ -2298,6 +2355,7 @@ mod tests {
             url: Some("leclerc-mcp.leclerc-mcp.svc.cluster.local:8080/sse".to_string()),
             command: None,
             args: vec![],
+            headers: None,
             timeout: None,
         };
         let warnings = validate_mcp_server_config(&server);
@@ -2313,6 +2371,7 @@ mod tests {
             url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
             command: None,
             args: vec![],
+            headers: None,
             timeout: None,
         };
         assert!(validate_mcp_server_config(&server).is_empty());
@@ -2330,6 +2389,7 @@ mod tests {
                 "@modelcontextprotocol/server-filesystem".to_string(),
                 "/home/developer/workspace".to_string(),
             ],
+            headers: None,
             timeout: Some(60000),
         }];
         let mcp = build_opencode_mcp_config(&servers);
@@ -2347,6 +2407,7 @@ mod tests {
             url: Some("http://buzz-mcp.mcp-suite.svc.cluster.local:8080/sse".to_string()),
             command: None,
             args: vec![],
+            headers: None,
             timeout: None,
         }];
         let mcp = build_opencode_mcp_config(&servers);
@@ -2424,5 +2485,46 @@ mod tests {
         logs.push_str("\n[AGENT_COMPLETED] Fin\n");
         let out = format_agent_output(&logs);
         assert!(out.contains("Sortie tronquée"));
+    }
+
+    #[test]
+    fn test_mcp_headers_propagated_to_opencode_and_agy() {
+        let json_raw = r#"{
+            "name": "opencode-openobserve",
+            "mcp_servers": [{
+                "name": "openobserve",
+                "type": "remote",
+                "url": "http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default/mcp",
+                "headers": {
+                    "Authorization": "Basic dXNlcjpwYXNz"
+                }
+            }]
+        }"#;
+        let cfg: AgentConfigMapData = serde_json::from_str(json_raw).unwrap();
+        let servers = cfg.mcp_servers.unwrap();
+        assert_eq!(
+            servers[0]
+                .headers
+                .as_ref()
+                .and_then(|h| h.get("Authorization"))
+                .map(String::as_str),
+            Some("Basic dXNlcjpwYXNz")
+        );
+
+        let oc = build_opencode_mcp_config(&servers);
+        assert_eq!(
+            oc["openobserve"]["headers"]["Authorization"],
+            "Basic dXNlcjpwYXNz"
+        );
+
+        let agy = build_agy_mcp_config(&servers);
+        assert_eq!(
+            agy["mcpServers"]["openobserve"]["serverUrl"],
+            "http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default/mcp"
+        );
+        assert_eq!(
+            agy["mcpServers"]["openobserve"]["headers"]["Authorization"],
+            "Basic dXNlcjpwYXNz"
+        );
     }
 }

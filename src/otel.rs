@@ -11,11 +11,13 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use std::collections::HashMap;
 
 pub fn setup_otel() -> Option<SdkTracerProvider> {
-    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default".to_string());
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| {
+        "http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default".to_string()
+    });
 
-    let auth_header = std::env::var("OPENOBSERVE_AUTH")
-        .unwrap_or_else(|_| "Basic bGxtLmRlZmF1bHRAc2EuaW50ZXJuYWw6S2hlbm8xUTNXTGl6UzYyWg==".to_string());
+    let auth_header = std::env::var("OPENOBSERVE_AUTH").unwrap_or_else(|_| {
+        "Basic bGxtLmRlZmF1bHRAc2EuaW50ZXJuYWw6S2hlbm8xUTNXTGl6UzYyWg==".to_string()
+    });
 
     let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "amaraki".to_string());
 
@@ -37,7 +39,10 @@ pub fn setup_otel() -> Option<SdkTracerProvider> {
     {
         Ok(exp) => exp,
         Err(e) => {
-            eprintln!("[amaraki] ⚠️ Échec de la construction de l'exporteur OTLP : {}", e);
+            eprintln!(
+                "[amaraki] ⚠️ Échec de la construction de l'exporteur OTLP : {}",
+                e
+            );
             return None;
         }
     };

